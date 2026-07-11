@@ -15,12 +15,12 @@ use notify::{
 use parking_lot::RwLock;
 
 use crate::{
-    RuntimeState, config::AppConfig, mapping_cache::RuntimeLookupCache,
+    config::AppConfig, mapping_cache::RuntimeLookupCache, state::Lookup,
 };
 
 pub fn start_config_watcher<P: AsRef<Path>>(
     config_path: P,
-    state: Arc<RwLock<RuntimeState>>,
+    state: Arc<RwLock<dyn Lookup>>,
 ) -> Result<RecommendedWatcher, notify::Error> {
     let path_to_watch = config_path.as_ref().to_owned();
 
@@ -41,9 +41,9 @@ pub fn start_config_watcher<P: AsRef<Path>>(
                     match reload_and_compile_cache(&path_to_watch) {
                         Ok(new_cache) => {
                             // Safely acquire a write lock and swap out the
-                            // cache
+                            // cache via the trait interface
                             let mut write_guard = state.write();
-                            write_guard.lookup_cache = new_cache;
+                            write_guard.set_lookup_cache(new_cache);
                             println!(
                                 "Configuration hot-swapped successfully!"
                             );

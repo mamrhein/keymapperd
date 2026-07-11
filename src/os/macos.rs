@@ -25,11 +25,12 @@ use objc2_core_graphics::{
 };
 use parking_lot::RwLock;
 
-use crate::{RuntimeState, mapping_cache::NativeAction};
+use crate::{mapping_cache::NativeAction, state::Lookup};
 
 /// Shared mutable state bridged into the C callback via `user_info`.
 struct TapContext {
-    state: Arc<RwLock<RuntimeState>>,
+    /// Trait-object lookup: decouples this module from RuntimeState's shape.
+    lookup: Arc<RwLock<dyn Lookup>>,
     /// Pre-created event source reused for every synthetic keyboard event.
     /// Avoids a per-keystroke allocation inside the hot callback path.
     source: CFRetained<CGEventSource>,
@@ -68,7 +69,7 @@ extern "C" fn signal_handler(_sig: libc::c_int) {
 }
 
 pub fn start_mapping(
-    state: Arc<RwLock<RuntimeState>>,
+    lookup: Arc<RwLock<dyn Lookup>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mask: u64 =
         (1u64 << CGEventType::KeyDown.0) | (1u64 << CGEventType::KeyUp.0);
@@ -81,7 +82,7 @@ pub fn start_mapping(
     // pointer for the FFI callback.  The `EventTapHandle` owns this pointer
     // and reclaims it in `Drop`.
     let context_ptr =
-        Box::into_raw(Box::new(TapContext { state, source })) as *mut _;
+        Box::into_raw(Box::new(TapContext { lookup, source })) as *mut _;
 
     let tap = unsafe {
         CGEvent::tap_create(
@@ -172,7 +173,6 @@ unsafe extern "C-unwind" fn macos_keyboard_callback_ffi(
     }
 
     let context = unsafe { &*(user_info as *const TapContext) };
-    let state = &context.state;
 
     let native_key = unsafe {
         CGEvent::integer_value_field(
@@ -183,28 +183,23 @@ unsafe extern "C-unwind" fn macos_keyboard_callback_ffi(
 
     let is_down = _type == CGEventType::KeyDown;
 
-    let state_guard = state.read();
-    let current_app = state_guard.active_app.to_lowercase();
-
-    let mut active_action = state_guard
-        .lookup_cache
-        .process_map
-        .get(&current_app)
-        .and_then(|m| m.get(&native_key));
-
-    if active_action.is_none() {
-        active_action = state_guard.lookup_cache.global_map.get(&native_key);
-    }
+    // Resolve the remapping through the trait interface.
+    let guard = context.lookup.read();
+    let current_app = guard.active_app().to_lowercase();
+    let active_action = guard
+        .for_app(&current_app, native_key)
+        .or_else(|| guard.global(native_key));
 
     if let Some(action) = active_action {
         match action {
             NativeAction::RemapTo(target_code) => {
                 // Modify the existing event's keycode in place.
+                let target = *target_code as u32;
                 unsafe {
                     CGEvent::set_integer_value_field(
                         Some(event.as_ref()),
                         CGEventField::KeyboardEventKeycode,
-                        *target_code as i64,
+                        target as i64,
                     );
                 }
                 return event.as_ptr();
@@ -212,10 +207,11 @@ unsafe extern "C-unwind" fn macos_keyboard_callback_ffi(
             NativeAction::Shortcut(target_codes) => {
                 let source = &context.source;
                 if is_down {
-                    for code in target_codes {
+                    for code in target_codes.iter() {
+                        let c = *code;
                         if let Some(e) = CGEvent::new_keyboard_event(
                             Some(source),
-                            *code as CGKeyCode,
+                            c as CGKeyCode,
                             true,
                         ) {
                             CGEvent::post(
@@ -226,9 +222,10 @@ unsafe extern "C-unwind" fn macos_keyboard_callback_ffi(
                     }
                 } else {
                     for code in target_codes.iter().rev() {
+                        let c = *code as u32;
                         if let Some(e) = CGEvent::new_keyboard_event(
                             Some(source),
-                            *code as CGKeyCode,
+                            c as CGKeyCode,
                             false,
                         ) {
                             CGEvent::post(

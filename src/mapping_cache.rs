@@ -14,17 +14,34 @@ use crate::{
     os_bridge::abstract_to_native_code,
 };
 
-/// Platform-native structural action layout
+/// Platform-native structural action layout.
 #[derive(Debug, Clone)]
 pub enum NativeAction {
     RemapTo(u32),
     Shortcut(Vec<u32>),
 }
 
-/// The ultimate performance runtime lookup cache structure.
+/// Compiled key-mapping cache optimised for fast runtime lookups.
+///
+/// Internal fields are private so that consumers go through the
+/// [`crate::state::Lookup`] trait instead of reaching into the HashMaps.
 pub struct RuntimeLookupCache {
-    pub process_map: HashMap<String, HashMap<u32, NativeAction>>,
-    pub global_map: HashMap<u32, NativeAction>,
+    process_map: HashMap<String, HashMap<u32, NativeAction>>,
+    global_map: HashMap<u32, NativeAction>,
+}
+
+// Re-expose the maps read-only via the Lookup trait impl in state.rs.
+// Keep them accessible for the internal compilation step.
+impl RuntimeLookupCache {
+    pub(crate) fn process_map(
+        &self,
+    ) -> &HashMap<String, HashMap<u32, NativeAction>> {
+        &self.process_map
+    }
+
+    pub(crate) fn global_map(&self) -> &HashMap<u32, NativeAction> {
+        &self.global_map
+    }
 }
 
 impl RuntimeLookupCache {

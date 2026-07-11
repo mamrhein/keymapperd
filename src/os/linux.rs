@@ -9,12 +9,11 @@
 
 use std::sync::Arc;
 use parking_lot::RwLock;
-use crate::RuntimeState;
-use crate::mapping_cache::NativeAction;
+use crate::{mapping_cache::NativeAction, state::Lookup};
 use evdev::{Device, Key};
 use uinput::event::keyboard;
 
-pub(crate) fn start_mapping(state: Arc<RwLock<RuntimeState>>) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) fn start_mapping(lookup: Arc<RwLock<dyn Lookup>>) -> Result<(), Box<dyn std::error::Error>> {
     // Dynamic path discovery should ideally replace this static file node
     let device_path = "/dev/input/event3";
     let mut raw_device = Device::open(device_path)?;
@@ -34,25 +33,23 @@ pub(crate) fn start_mapping(state: Arc<RwLock<RuntimeState>>) -> Result<(), Box<
                 let code = event.code() as u32;
                 let value = event.value(); // 1 = Down, 0 = Up, 2 = Repeat
 
-                let state_guard = state.read();
-                let current_app = state_guard.active_app.to_lowercase();
-
-                let mut active_action = state_guard.lookup_cache.process_map.get(&current_app).and_then(|m| m.get(&code));
-                if active_action.is_none() {
-                    active_action = state_guard.lookup_cache.global_map.get(&code);
-                }
+                let guard = lookup.read();
+                let current_app = guard.active_app().to_lowercase();
+                let active_action = guard
+                    .for_app(&current_app, code)
+                    .or_else(|| guard.global(code));
 
                 if let Some(action) = active_action {
                     match action {
                         NativeAction::RemapTo(target) => {
-                            let key: uinput::event::keyboard::Key = unsafe { std::mem::transmute(*target as i32) };
+                            let key: uinput::event::keyboard::Key = unsafe { std::mem::transmute(**target as i32) };
                             if value == 1 { virtual_device.press(&key)?; }
                             else if value == 0 { virtual_device.release(&key)?; }
                             virtual_device.synchronize()?;
                         }
                         NativeAction::Shortcut(targets) => {
                             if value == 1 {
-                                for t in targets {
+                                for t in *targets {
                                     let key: uinput::event::keyboard::Key = unsafe { std::mem::transmute(*t as i32) };
                                     virtual_device.press(&key)?;
                                 }

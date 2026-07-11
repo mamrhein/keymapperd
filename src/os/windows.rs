@@ -20,16 +20,19 @@ use windows_sys::Win32::{
     },
 };
 
-use crate::{RuntimeState, mapping_cache::NativeAction};
+use crate::{mapping_cache::NativeAction, state::Lookup};
 
 static mut HOOK_HANDLE: windows_sys::Win32::UI::WindowsAndFiltering::HHOOK = 0;
-static mut SHARED_STATE: Option<Arc<RwLock<RuntimeState>>> = None;
+// TODO(#8): Replace static mut with a safe alternative (e.g., thread-local
+// or hook-proc redesign). Windows LL keyboard hook API does not support
+// passing user data, so a global is currently unavoidable.
+static mut SHARED_LOOKUP: Option<Arc<RwLock<dyn Lookup>>> = None;
 
 pub(crate) fn start_mapping(
-    state: Arc<RwLock<RuntimeState>>,
+    lookup: Arc<RwLock<dyn Lookup>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     unsafe {
-        SHARED_STATE = Some(state);
+        SHARED_LOOKUP = Some(lookup);
         let h_instance: HINSTANCE = GetModuleHandleW(null_mut());
 
         HOOK_HANDLE = SetWindowsHookExW(
@@ -58,7 +61,7 @@ unsafe extern "system" fn low_level_keyboard_proc(
     l_param: LPARAM,
 ) -> LRESULT {
     if code >= 0 {
-        if let Some(ref state) = SHARED_STATE {
+        if let Some(ref lookup) = SHARED_LOOKUP {
             let kbd_struct = *(l_param as *const KBDLLHOOKSTRUCT);
             let vk_code = kbd_struct.vkCode;
 
@@ -67,27 +70,20 @@ unsafe extern "system" fn low_level_keyboard_proc(
             let is_key_up =
                 w_param as u32 == WM_KEYUP || w_param as u32 == WM_SYSKEYUP;
 
-            let state_guard = state.read();
-            let current_app = state_guard.active_app.to_lowercase();
-
-            let mut active_action = state_guard
-                .lookup_cache
-                .process_map
-                .get(&current_app)
-                .and_then(|m| m.get(&vk_code));
-            if active_action.is_none() {
-                active_action =
-                    state_guard.lookup_cache.global_map.get(&vk_code);
-            }
+            let guard = lookup.read();
+            let current_app = guard.active_app().to_lowercase();
+            let active_action = guard
+                .for_app(&current_app, vk_code)
+                .or_else(|| guard.global(vk_code));
 
             if let Some(action) = active_action {
                 match action {
                     NativeAction::RemapTo(target_vk) => {
-                        simulate_key_event(*target_vk as u8, is_key_up);
+                        simulate_key_event(**target_vk as u8, is_key_up);
                     }
                     NativeAction::Shortcut(target_vks) => {
                         if is_key_down {
-                            for vk in target_vks {
+                            for vk in *target_vks {
                                 simulate_key_event(*vk as u8, false);
                             }
                         } else if is_key_up {

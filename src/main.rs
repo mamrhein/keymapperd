@@ -12,17 +12,13 @@ mod hot_reload;
 mod mapping_cache;
 mod os;
 mod os_bridge;
+mod state;
 
 use std::{sync::Arc, thread, time::Duration};
 
 use parking_lot::RwLock;
 
 use crate::{config::AppConfig, mapping_cache::RuntimeLookupCache};
-
-pub struct RuntimeState {
-    pub lookup_cache: RuntimeLookupCache,
-    pub active_app: String,
-}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config_path = "config.toml";
@@ -41,10 +37,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let initial_cache =
         RuntimeLookupCache::compile_from_config(&parsed_config);
 
-    let state = Arc::new(RwLock::new(RuntimeState {
-        lookup_cache: initial_cache,
-        active_app: String::from("unknown"),
-    }));
+    // Coerce to dyn Lookup at creation time.  All Arc::clone calls
+    // downstream inherit this trait-object type, so platform modules
+    // never see the concrete RuntimeState shape.
+    let state: Arc<RwLock<dyn crate::state::Lookup>> =
+        Arc::new(RwLock::new(crate::state::RuntimeState::new(
+            initial_cache,
+            String::from("unknown"),
+        )));
 
     // Start hot-reloader thread
     let _watcher =
@@ -61,15 +61,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Err(_) => String::from("unknown"),
                 };
 
-            // Acquire a read lock first to check whether the value actually
-            // changed. This avoids evicting concurrent readers on every poll
-            // cycle (10 Hz) when the foreground app is stable.
-            if !tracker_state.read().active_app.eq(&current_focused_app) {
+            // Read-check -> conditional write-escalation.  Uses trait
+            // methods so this code is also decoupled from RuntimeState.
+            if !tracker_state.read().active_app().eq(&current_focused_app) {
                 let mut write_guard = tracker_state.write();
-                // Re-check behind the write lock in case another writer
-                // already updated between the read-check and now.
-                if !write_guard.active_app.eq(&current_focused_app) {
-                    write_guard.active_app = current_focused_app;
+                if !write_guard.active_app().eq(&current_focused_app) {
+                    write_guard.set_active_app(current_focused_app);
                 }
             }
 
@@ -78,7 +75,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     println!("Cross-platform runtime engines fully synchronized.");
-    let input_state = Arc::clone(&state);
 
-    crate::os::start_mapping(input_state)
+    crate::os::start_mapping(Arc::clone(&state))
 }
