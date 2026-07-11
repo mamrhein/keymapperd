@@ -7,7 +7,7 @@
 // $Source$
 // $Revision$
 
-use std::collections::HashMap;
+use std::{collections::HashMap, fs, path::Path};
 
 use crate::{
     config::{AppConfig, KeyAction},
@@ -56,6 +56,16 @@ impl RuntimeLookupCache {
 }
 
 impl RuntimeLookupCache {
+    /// Load a TOML config file, parse it, and compile the lookup cache
+    /// in one step.  Used by both initialisation and hot-reload.
+    pub fn compile_from_path<P: AsRef<Path>>(
+        path: P,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let content = fs::read_to_string(path)?;
+        let parsed = AppConfig::load_from_str(&content)?;
+        Ok(Self::compile_from_config(&parsed))
+    }
+
     pub fn compile_from_config(app_config: &AppConfig) -> Self {
         let mut process_map: HashMap<
             String,

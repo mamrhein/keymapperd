@@ -7,16 +7,14 @@
 // $Source$
 // $Revision$
 
-use std::{fs, path::Path, sync::Arc};
+use std::{path::Path, sync::Arc};
 
 use notify::{
     Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher,
 };
 use parking_lot::RwLock;
 
-use crate::{
-    config::AppConfig, mapping_cache::RuntimeLookupCache, state::Lookup,
-};
+use crate::{mapping_cache::RuntimeLookupCache, state::Lookup};
 
 pub fn start_config_watcher<P: AsRef<Path>>(
     config_path: P,
@@ -24,7 +22,7 @@ pub fn start_config_watcher<P: AsRef<Path>>(
 ) -> Result<RecommendedWatcher, notify::Error> {
     let path_to_watch = config_path.as_ref().to_owned();
 
-    // 1. Create a cross-platform watcher infrastructure.
+    // Create a cross-platform watcher infrastructure.
     // The closure triggers whenever an OS file system signal fires.
     let mut watcher = RecommendedWatcher::new(
         move |result: Result<Event, notify::Error>| match result {
@@ -37,8 +35,9 @@ pub fn start_config_watcher<P: AsRef<Path>>(
                          Reloading..."
                     );
 
-                    // Attempt to safely reparse and recompile the file
-                    match reload_and_compile_cache(&path_to_watch) {
+                    // Reparse and recompile via the shared loader
+                    match RuntimeLookupCache::compile_from_path(&path_to_watch)
+                    {
                         Ok(new_cache) => {
                             // Safely acquire a write lock and swap out the
                             // cache via the trait interface
@@ -61,24 +60,12 @@ pub fn start_config_watcher<P: AsRef<Path>>(
                     }
                 }
             }
-            Err(e) => eprintln!("File system watcher error error: {:?}", e),
+            Err(e) => eprintln!("File system watcher error: {:?}", e),
         },
         Config::default(),
     )?;
 
-    // 2. Point the native OS event system to your configuration file
     watcher.watch(config_path.as_ref(), RecursiveMode::NonRecursive)?;
 
     Ok(watcher)
-}
-
-/// Helper function to perform isolated file reading and compilation
-fn reload_and_compile_cache(
-    path: &Path,
-) -> Result<RuntimeLookupCache, Box<dyn std::error::Error>> {
-    let content = fs::read_to_string(path)?;
-    let parsed_config = AppConfig::load_from_str(&content)?;
-    let compiled_cache =
-        RuntimeLookupCache::compile_from_config(&parsed_config);
-    Ok(compiled_cache)
 }

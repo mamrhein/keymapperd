@@ -18,8 +18,6 @@ use std::{sync::Arc, thread, time::Duration};
 
 use parking_lot::RwLock;
 
-use crate::{config::AppConfig, mapping_cache::RuntimeLookupCache};
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config_path = "config.toml";
 
@@ -32,10 +30,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )?;
     }
 
-    let initial_content = std::fs::read_to_string(config_path)?;
-    let parsed_config = AppConfig::load_from_str(&initial_content)?;
     let initial_cache =
-        RuntimeLookupCache::compile_from_config(&parsed_config);
+        crate::mapping_cache::RuntimeLookupCache::compile_from_path(
+            config_path,
+        )?;
 
     // Coerce to dyn Lookup at creation time.  All Arc::clone calls
     // downstream inherit this trait-object type, so platform modules
