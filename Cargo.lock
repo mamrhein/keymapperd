@@ -715,6 +715,7 @@ version = "0.1.0"
 dependencies = [
  "active-win-pos-rs",
  "evdev",
+ "libc",
  "notify",
  "objc2",
  "objc2-app-kit",

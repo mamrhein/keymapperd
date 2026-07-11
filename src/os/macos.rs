@@ -7,10 +7,16 @@
 // $Source$
 // $Revision$
 
-use std::sync::Arc;
+use std::{
+    ffi::c_void,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use objc2_core_foundation::{
-    CFMachPort, CFRunLoop, CFRunLoopSource, kCFRunLoopCommonModes,
+    CFMachPort, CFRetained, CFRunLoop, CFRunLoopSource, kCFRunLoopCommonModes,
 };
 use objc2_core_graphics::{
     CGEvent, CGEventField, CGEventSource, CGEventSourceStateID,
@@ -24,15 +30,41 @@ use crate::{RuntimeState, mapping_cache::NativeAction};
 /// Shared mutable state bridged into the C callback via `user_info`.
 struct TapContext {
     state: Arc<RwLock<RuntimeState>>,
+    /// Pre-created event source reused for every synthetic keyboard event.
+    /// Avoids a per-keystroke allocation inside the hot callback path.
+    source: CFRetained<CGEventSource>,
 }
 
-/// Holds the tap and run-loop-source so they stay alive for the lifetime
-/// of the event-loop.
+static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+/// Holds the tap, run-loop-source, and callback context so they stay alive
+/// for the lifetime of the event-loop, and are cleanly reclaimed on drop.
 struct EventTapHandle {
+    tap: CFRetained<CFMachPort>,
     #[allow(dead_code)]
-    tap: objc2_core_foundation::CFRetained<CFMachPort>,
-    #[allow(dead_code)]
-    run_loop_source: objc2_core_foundation::CFRetained<CFRunLoopSource>,
+    run_loop_source: CFRetained<CFRunLoopSource>,
+    /// Raw pointer to the heap-allocated `TapContext` passed as `user_info`.
+    /// Reclaimed in `Drop` to avoid a memory leak.
+    context_ptr: *mut TapContext,
+}
+
+impl Drop for EventTapHandle {
+    fn drop(&mut self) {
+        // Disable the tap so no further callbacks fire.
+        CGEvent::tap_enable(&self.tap, false);
+
+        // Reclaim and free the leaked `Box<TapContext>`. This also drops
+        // the `CFRetained<CGEventSource>`, releasing the CoreFoundation
+        // object.
+        unsafe {
+            drop(Box::from_raw(self.context_ptr));
+        }
+    }
+}
+
+/// Async-signal-safe handler that flips the shutdown flag.
+extern "C" fn signal_handler(_sig: libc::c_int) {
+    SHUTDOWN_REQUESTED.store(true, Ordering::Release);
 }
 
 pub fn start_mapping(
@@ -41,6 +73,16 @@ pub fn start_mapping(
     let mask: u64 =
         (1u64 << CGEventType::KeyDown.0) | (1u64 << CGEventType::KeyUp.0);
 
+    let source =
+        CGEventSource::new(CGEventSourceStateID::CombinedSessionState)
+            .ok_or("Failed to create CGEventSource")?;
+
+    // Allocate the context on the heap and leak the `Box` to get a stable
+    // pointer for the FFI callback.  The `EventTapHandle` owns this pointer
+    // and reclaims it in `Drop`.
+    let context_ptr =
+        Box::into_raw(Box::new(TapContext { state, source })) as *mut _;
+
     let tap = unsafe {
         CGEvent::tap_create(
             CGEventTapLocation::HIDEventTap,
@@ -48,11 +90,15 @@ pub fn start_mapping(
             CGEventTapOptions::Default,
             mask,
             Some(macos_keyboard_callback_ffi),
-            Box::into_raw(Box::new(TapContext { state })) as _,
+            context_ptr as *mut c_void,
         )
     };
 
     let Some(tap) = tap else {
+        // Tap creation failed; reclaim the context to avoid the leak.
+        unsafe {
+            drop(Box::from_raw(context_ptr));
+        }
         return Err("Failed to create macOS CGEventTap. Verify \
                     Accessibility privileges!"
             .into());
@@ -61,25 +107,51 @@ pub fn start_mapping(
     let Some(run_loop_source) =
         CFMachPort::new_run_loop_source(None, Some(&tap), 0)
     else {
+        unsafe {
+            drop(Box::from_raw(context_ptr));
+        }
         return Err("Failed to create CFRunLoopSource from Mach Port.".into());
     };
 
-    if let Some(rl) = CFRunLoop::current() {
-        rl.add_source(Some(&run_loop_source), unsafe {
-            kCFRunLoopCommonModes
-        });
-    }
+    let run_loop = CFRunLoop::current().ok_or("No current run loop")?;
+    run_loop
+        .add_source(Some(&run_loop_source), unsafe { kCFRunLoopCommonModes });
 
     CGEvent::tap_enable(&tap, true);
     println!("Modern compile-safe macOS Event Tap actively running...");
 
-    // Keep the tap + run-loop-source alive while we block on the run-loop.
-    let _handle = EventTapHandle {
+    // Register signal handlers for graceful shutdown.
+    let handler_ptr = signal_handler as *const () as usize;
+    unsafe {
+        libc::signal(libc::SIGINT, handler_ptr);
+        libc::signal(libc::SIGTERM, handler_ptr);
+    }
+
+    // Own the tap, run-loop-source, and context pointer. Dropped together
+    // when the run-loop exits.
+    let handle = EventTapHandle {
         tap,
         run_loop_source,
+        context_ptr,
     };
 
-    CFRunLoop::run();
+    // Poll the run-loop with a short timeout so we can check the shutdown
+    // flag each iteration. This avoids an infinite `CFRunLoop::run()` block
+    // and lets us exit cleanly on SIGINT / SIGTERM.
+    while !SHUTDOWN_REQUESTED.load(Ordering::Acquire) {
+        CFRunLoop::run_in_mode(
+            unsafe { kCFRunLoopCommonModes },
+            0.5, // 500 ms timeout
+            true,
+        );
+    }
+
+    println!("Shutdown signal received. Cleaning up...");
+
+    // `handle` is dropped here, which:
+    // 1. Disables the tap
+    // 2. Reclaims and frees the `TapContext` (and its `CGEventSource`)
+    drop(handle);
 
     Ok(())
 }
@@ -125,10 +197,6 @@ unsafe extern "C-unwind" fn macos_keyboard_callback_ffi(
     }
 
     if let Some(action) = active_action {
-        let source =
-            CGEventSource::new(CGEventSourceStateID::CombinedSessionState)
-                .unwrap();
-
         match action {
             NativeAction::RemapTo(target_code) => {
                 // Modify the existing event's keycode in place.
@@ -142,10 +210,11 @@ unsafe extern "C-unwind" fn macos_keyboard_callback_ffi(
                 return event.as_ptr();
             }
             NativeAction::Shortcut(target_codes) => {
+                let source = &context.source;
                 if is_down {
                     for code in target_codes {
                         if let Some(e) = CGEvent::new_keyboard_event(
-                            Some(&source),
+                            Some(source),
                             *code as CGKeyCode,
                             true,
                         ) {
@@ -158,7 +227,7 @@ unsafe extern "C-unwind" fn macos_keyboard_callback_ffi(
                 } else {
                     for code in target_codes.iter().rev() {
                         if let Some(e) = CGEvent::new_keyboard_event(
-                            Some(&source),
+                            Some(source),
                             *code as CGKeyCode,
                             false,
                         ) {
