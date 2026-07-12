@@ -8,11 +8,11 @@
 // $Revision$
 
 mod config;
-mod hot_reload;
 mod key_names;
 mod mapping_cache;
 mod os;
 mod state;
+mod watcher;
 
 use std::{sync::Arc, thread, time::Duration};
 
@@ -46,7 +46,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Start hot-reloader thread
     let _watcher =
-        hot_reload::start_config_watcher(config_path, Arc::clone(&state))?;
+        watcher::start_config_watcher(config_path, Arc::clone(&state))?;
 
     // Start tracking foreground windows natively
     let tracker_state = Arc::clone(&state);
