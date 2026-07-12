@@ -418,12 +418,14 @@ pub(crate) fn start_mapping(
                         let current_app = guard.active_app().to_lowercase();
                         let active_action = guard
                             .for_app(&current_app, code)
-                            .or_else(|| guard.global(code));
+                            .or_else(|| guard.global(code))
+                            .cloned();
+                        drop(guard);
 
                         if let Some(action) = active_action {
                             match action {
                                 NativeAction::RemapTo(target) => {
-                                    let key = EvdevKey::new(*target);
+                                    let key = EvdevKey::new(target);
                                     if value == 1 {
                                         virtual_device.press(&key)?;
                                     } else if value == 0 {
@@ -438,7 +440,7 @@ pub(crate) fn start_mapping(
                                 }
                                 NativeAction::Shortcut(targets) => {
                                     if value == 1 {
-                                        for t in targets.iter() {
+                                        for t in &targets {
                                             let key = EvdevKey::new(*t);
                                             virtual_device.press(&key)?;
                                         }

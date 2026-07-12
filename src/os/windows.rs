@@ -406,16 +406,18 @@ extern "system" fn low_level_keyboard_proc(
     let current_app = guard.active_app().to_lowercase();
     let active_action = guard
         .for_app(&current_app, vk_code)
-        .or_else(|| guard.global(vk_code));
+        .or_else(|| guard.global(vk_code))
+        .cloned();
+    drop(guard);
 
     if let Some(action) = active_action {
         match action {
             NativeAction::RemapTo(target_vk) => {
-                simulate_key_event(*target_vk, is_key_up);
+                simulate_key_event(target_vk, is_key_up);
             }
             NativeAction::Shortcut(target_vks) => {
                 if is_key_down {
-                    for vk in target_vks.iter() {
+                    for vk in &target_vks {
                         simulate_key_event(*vk, false);
                     }
                 } else if is_key_up {

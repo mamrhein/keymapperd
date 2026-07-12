@@ -468,12 +468,15 @@ unsafe extern "C-unwind" fn macos_keyboard_callback_ffi(
 
     let is_down = _type == CGEventType::KeyDown;
 
-    // Resolve the remapping through the trait interface.
+    // Resolve the remapping through the trait interface.  Clone the action
+    // out so we can drop the read lock before expensive CGEvent operations.
     let guard = context.lookup.read();
     let current_app = guard.active_app().to_lowercase();
     let active_action = guard
         .for_app(&current_app, native_key)
-        .or_else(|| guard.global(native_key));
+        .or_else(|| guard.global(native_key))
+        .cloned();
+    drop(guard);
 
     if let Some(action) = active_action {
         match action {
@@ -483,17 +486,16 @@ unsafe extern "C-unwind" fn macos_keyboard_callback_ffi(
                     CGEvent::set_integer_value_field(
                         Some(event.as_ref()),
                         CGEventField::KeyboardEventKeycode,
-                        *target_code as i64,
+                        target_code as i64,
                     );
                 }
                 return event.as_ptr();
             }
             NativeAction::Shortcut(target_codes) => {
-                let source = &context.source;
                 if is_down {
-                    for code in target_codes.iter() {
+                    for code in &target_codes {
                         if let Some(e) = CGEvent::new_keyboard_event(
-                            Some(source),
+                            Some(&context.source),
                             *code as CGKeyCode,
                             true,
                         ) {
@@ -506,7 +508,7 @@ unsafe extern "C-unwind" fn macos_keyboard_callback_ffi(
                 } else {
                     for code in target_codes.iter().rev() {
                         if let Some(e) = CGEvent::new_keyboard_event(
-                            Some(source),
+                            Some(&context.source),
                             *code as CGKeyCode,
                             false,
                         ) {
