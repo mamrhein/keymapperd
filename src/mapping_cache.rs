@@ -7,9 +7,11 @@
 // $Source$
 // $Revision$
 
-use std::{collections::HashMap, fs, path::Path};
+use std::{fs, path::Path};
 
-use crate::config::{AppConfig, ChordTrigger, Key, KeyAction};
+use indexmap::IndexMap;
+
+use crate::config::{AppConfig, ChordTrigger, Key};
 
 /// A compiled chord: specific modifier requirement + base key.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -30,32 +32,33 @@ pub enum NativeAction {
 
 /// Compiled key-mapping cache optimised for fast runtime lookups.
 ///
-/// Single-key rules are stored in HashMaps for O(1) lookup.  Chord rules
-/// are stored as small Vecs and scanned linearly — the rule count is small
-/// enough that O(n) is negligible compared to FFI overhead.
+/// Single-key rules are stored in `IndexMap`s for O(1) lookup while
+/// preserving insertion order.  Chord rules are stored as small `Vec`s
+/// and scanned linearly -- the rule count is small enough that O(n)
+/// is negligible compared to FFI overhead.
 pub struct RuntimeLookupCache {
     // Single-key rules (bare key, no modifiers required).
-    process_map: HashMap<String, HashMap<u16, NativeAction>>,
-    global_map: HashMap<u16, NativeAction>,
+    process_map: IndexMap<String, IndexMap<u16, NativeAction>>,
+    global_map: IndexMap<u16, NativeAction>,
     // Chord rules (modifiers + base key).
-    process_chords: HashMap<String, Vec<(NativeChord, NativeAction)>>,
+    process_chords: IndexMap<String, Vec<(NativeChord, NativeAction)>>,
     global_chords: Vec<(NativeChord, NativeAction)>,
 }
 
 impl RuntimeLookupCache {
     pub(crate) fn process_map(
         &self,
-    ) -> &HashMap<String, HashMap<u16, NativeAction>> {
+    ) -> &IndexMap<String, IndexMap<u16, NativeAction>> {
         &self.process_map
     }
 
-    pub(crate) fn global_map(&self) -> &HashMap<u16, NativeAction> {
+    pub(crate) fn global_map(&self) -> &IndexMap<u16, NativeAction> {
         &self.global_map
     }
 
     pub(crate) fn process_chords(
         &self,
-    ) -> &HashMap<String, Vec<(NativeChord, NativeAction)>> {
+    ) -> &IndexMap<String, Vec<(NativeChord, NativeAction)>> {
         &self.process_chords
     }
 
@@ -65,7 +68,7 @@ impl RuntimeLookupCache {
 }
 
 impl RuntimeLookupCache {
-    /// Load a TOML config file, parse it, and compile the lookup cache
+    /// Load a YAML config file, parse it, and compile the lookup cache
     /// in one step.  Used by both initialisation and hot-reload.
     pub fn compile_from_path<P: AsRef<Path>>(
         path: P,
@@ -76,58 +79,56 @@ impl RuntimeLookupCache {
     }
 
     pub fn compile_from_config(app_config: &AppConfig) -> Self {
-        let mut process_map: HashMap<String, HashMap<u16, NativeAction>> =
-            HashMap::new();
-        let mut global_map: HashMap<u16, NativeAction> = HashMap::new();
-        let mut process_chords: HashMap<
+        let mut process_map: IndexMap<String, IndexMap<u16, NativeAction>> =
+            IndexMap::new();
+        let mut global_map: IndexMap<u16, NativeAction> = IndexMap::new();
+        let mut process_chords: IndexMap<
             String,
             Vec<(NativeChord, NativeAction)>,
-        > = HashMap::new();
+        > = IndexMap::new();
         let mut global_chords: Vec<(NativeChord, NativeAction)> = Vec::new();
 
-        for rule in &app_config.rules {
-            let native_action = match &rule.action {
-                KeyAction::RemapTo(target_key) => {
-                    NativeAction::RemapTo(target_key.as_native())
-                }
-                KeyAction::Shortcut(target_keys) => {
-                    let compiled: Vec<u16> =
-                        target_keys.iter().map(|k| k.as_native()).collect();
-                    NativeAction::Shortcut(compiled)
-                }
+        // Iterate groups in definition order.  First-match-wins is
+        // guaranteed by the IndexMap/Vec preserving insertion order.
+        for group in &app_config.groups {
+            // Skip empty groups (no mappings defined).
+            if group.mappings.is_empty() {
+                continue;
+            }
+
+            let apps: Vec<String> = if group.apps.is_empty() {
+                Vec::new()
+            } else {
+                group.apps.iter().map(|a| a.to_lowercase()).collect()
             };
 
-            match &rule.trigger {
-                ChordTrigger::Key(key) => {
-                    // Single-key rule — goes into the HashMap.
-                    let native = key.as_native();
-                    if rule.applications.is_empty() {
+            for (trigger, outputs) in group.mappings.iter() {
+                let native_action = compile_action(outputs);
+                let (chord, is_single_key) = compile_trigger(trigger);
+
+                if is_single_key {
+                    // Single-key rule -- goes into the IndexMap.
+                    let native = chord.base;
+                    if apps.is_empty() {
                         global_map.insert(native, native_action);
                     } else {
-                        for app in &rule.applications {
+                        for app in &apps {
                             process_map
-                                .entry(app.to_lowercase())
+                                .entry(app.clone())
                                 .or_default()
                                 .insert(native, native_action.clone());
                         }
                     }
-                }
-                ChordTrigger::Chord { base, modifiers } => {
-                    // Chord rule — goes into the linear scan list.
-                    let chord_mods =
-                        compile_modifier_bits(modifiers.iter().copied());
-                    let chord = NativeChord {
-                        modifiers: chord_mods,
-                        base: base.as_native(),
-                    };
+                } else {
+                    // Chord rule -- goes into the linear scan list.
                     let entry = (chord, native_action);
 
-                    if rule.applications.is_empty() {
+                    if apps.is_empty() {
                         global_chords.push(entry);
                     } else {
-                        for app in &rule.applications {
+                        for app in &apps {
                             process_chords
-                                .entry(app.to_lowercase())
+                                .entry(app.clone())
                                 .or_default()
                                 .push(entry.clone());
                         }
@@ -141,6 +142,55 @@ impl RuntimeLookupCache {
             global_map,
             process_chords,
             global_chords,
+        }
+    }
+}
+
+/// Compile a list of output chords into a native action.
+fn compile_action(outputs: &[ChordTrigger]) -> NativeAction {
+    if outputs.len() == 1 {
+        // Single output -- remap to that key.
+        let target = chord_to_native_key(&outputs[0]);
+        NativeAction::RemapTo(target)
+    } else {
+        // Multiple outputs -- simulate as a shortcut sequence.
+        let codes: Vec<u16> =
+            outputs.iter().map(chord_to_native_key).collect();
+        NativeAction::Shortcut(codes)
+    }
+}
+
+/// Extract the native key code from a chord trigger.  For chords, this
+/// extracts the base key's native code; modifiers are only meaningful
+/// for input triggers, not outputs.
+fn chord_to_native_key(chord: &ChordTrigger) -> u16 {
+    match chord {
+        ChordTrigger::Key(key) => key.as_native(),
+        ChordTrigger::Chord { base, .. } => base.as_native(),
+    }
+}
+
+/// Compile a trigger chord into its native representation.
+/// Returns the compiled `NativeChord` and whether it's a single-key trigger
+/// (no modifiers).
+fn compile_trigger(trigger: &ChordTrigger) -> (NativeChord, bool) {
+    match trigger {
+        ChordTrigger::Key(key) => (
+            NativeChord {
+                modifiers: 0,
+                base: key.as_native(),
+            },
+            true,
+        ),
+        ChordTrigger::Chord { base, modifiers } => {
+            let chord_mods = compile_modifier_bits(modifiers.iter().copied());
+            (
+                NativeChord {
+                    modifiers: chord_mods,
+                    base: base.as_native(),
+                },
+                false,
+            )
         }
     }
 }

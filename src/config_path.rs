@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 
 const APP_NAME: &str = "keymapperd";
-const CONFIG_FILE: &str = "config.toml";
+const CONFIG_FILE: &str = "config.yaml";
 
 /// Search standard platform directories for the user configuration file.
 ///

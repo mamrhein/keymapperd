@@ -7,7 +7,8 @@
 // $Source$
 // $Revision$
 
-use serde::{Deserialize, Deserializer, Serialize};
+use indexmap::IndexMap;
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
 // Re-export the platform-specific Key type so that downstream modules
 // (mapping_cache, state, hot_reload) import it from this module.
@@ -15,11 +16,11 @@ pub(crate) use crate::os::Key;
 
 /// A key press, optionally combined with modifier keys.
 ///
-/// Accepts compact `+`-separated strings in TOML:
-/// - `"CapsLock"` — single key, no modifiers
-/// - `"ctrl+a"` — chord: ctrl held while pressing a
-/// - `"cmd+shift+t"` — chord: cmd+shift held while pressing t
-#[derive(Debug, Clone)]
+/// Accepts compact `+`-separated strings in YAML:
+/// - `"CapsLock"` -- single key, no modifiers
+/// - `"ctrl+a"` -- chord: ctrl held while pressing a
+/// - `"cmd+shift+t"` -- chord: cmd+shift held while pressing t
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ChordTrigger {
     /// Single key with no modifier requirement (e.g. CapsLock alone).
     Key(Key),
@@ -33,7 +34,7 @@ impl<'de> Deserialize<'de> for ChordTrigger {
         D: Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
-        Self::parse(&s).map_err(serde::de::Error::custom)
+        Self::parse(&s).map_err(de::Error::custom)
     }
 }
 
@@ -93,83 +94,402 @@ fn parse_key(token: &str) -> Result<Key, String> {
         return Err("empty key token in trigger".to_string());
     }
 
-    let lower = trimmed.to_lowercase();
+    // Strip underscores so that "left_control" and "leftcontrol" match.
+    let lower = trimmed.replace('_', "").to_lowercase();
     let canonical = crate::key_names::resolve_alias(&lower).unwrap_or(&lower);
 
     Key::from_canonical(canonical)
         .ok_or_else(|| crate::key_names::unknown_key_error(trimmed))
 }
 
-/// The type of action to execute when a key condition matches.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum KeyAction {
-    /// Remap to another single key (e.g., CapsLock -> LeftControl)
-    RemapTo(Key),
-    /// Simulate a multi-key macro shortcut (e.g., F1 -> Ctrl + T)
-    Shortcut(Vec<Key>),
-}
+// ---------------------------------------------------------------------------
+// MappingTable -- ordered chord -> chords mapping
+// ---------------------------------------------------------------------------
 
-/// A specific mapping rule bound to applications.
+/// An ordered collection of mappings from a trigger chord to output chords.
+///
+/// Stored as an `IndexMap` to guarantee first-match-wins semantics when the
+/// cache is compiled.  Deserialized from a YAML mapping where keys are chord
+/// strings and values are either a single chord string or a list of chord
+/// strings.
 #[derive(Debug, Clone)]
-pub struct MappingRule {
-    pub description: Option<String>,
-    /// List of target applications (process names or bundle IDs).
-    /// Empty list means the rule applies globally.
-    pub applications: Vec<String>,
-    pub trigger: ChordTrigger,
-    pub action: KeyAction,
+pub struct MappingTable(IndexMap<ChordTrigger, Vec<ChordTrigger>>);
+
+impl Default for MappingTable {
+    fn default() -> Self {
+        Self(IndexMap::new())
+    }
 }
 
-impl<'de> Deserialize<'de> for MappingRule {
+impl MappingTable {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Iterate over (trigger, outputs) pairs in definition order.
+    pub fn iter(
+        &self,
+    ) -> impl Iterator<Item = (&ChordTrigger, &[ChordTrigger])> {
+        self.0.iter().map(|(k, v)| (k, v.as_slice()))
+    }
+}
+
+/// Custom visitor that deserializes a YAML mapping into an ordered
+/// `MappingTable`, preserving document order.
+struct MappingTableVisitor;
+
+impl<'de> de::Visitor<'de> for MappingTableVisitor {
+    type Value = MappingTable;
+
+    fn expecting(
+        &self,
+        formatter: &mut std::fmt::Formatter,
+    ) -> std::fmt::Result {
+        formatter.write_str("a mapping from chord strings to chord(s)")
+    }
+
+    fn visit_map<M>(self, mut access: M) -> Result<Self::Value, M::Error>
+    where
+        M: de::MapAccess<'de>,
+    {
+        let mut map = IndexMap::new();
+
+        while let Some((key_str, value)) =
+            access.next_entry::<String, serde_yaml::Value>()?
+        {
+            let trigger =
+                ChordTrigger::parse(&key_str).map_err(de::Error::custom)?;
+
+            let outputs = match value {
+                serde_yaml::Value::String(s) => {
+                    let chord =
+                        ChordTrigger::parse(&s).map_err(de::Error::custom)?;
+                    vec![chord]
+                }
+                serde_yaml::Value::Sequence(seq) => seq
+                    .into_iter()
+                    .map(|v| match v {
+                        serde_yaml::Value::String(s) => {
+                            ChordTrigger::parse(&s).map_err(de::Error::custom)
+                        }
+                        _ => Err(de::Error::custom(
+                            "expected a chord string in output sequence",
+                        )),
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+                _ => {
+                    return Err(de::Error::custom(
+                        "expected a chord string or list of chord strings",
+                    ));
+                }
+            };
+
+            map.insert(trigger, outputs);
+        }
+
+        Ok(MappingTable(map))
+    }
+}
+
+impl<'de> Deserialize<'de> for MappingTable {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        #[derive(Deserialize)]
-        struct RuleRaw {
-            description: Option<String>,
-            applications: Vec<String>,
-            trigger: String,
-            action: KeyAction,
-        }
-
-        let raw = RuleRaw::deserialize(deserializer)?;
-        let trigger = ChordTrigger::parse(&raw.trigger)
-            .map_err(serde::de::Error::custom)?;
-
-        Ok(Self {
-            description: raw.description,
-            applications: raw.applications,
-            trigger,
-            action: raw.action,
-        })
+        deserializer.deserialize_map(MappingTableVisitor)
     }
 }
 
-impl Serialize for MappingRule {
+impl Serialize for MappingTable {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
-        S: serde::Serializer,
+        S: Serializer,
     {
-        use serde::ser::SerializeStruct;
+        use serde::ser::SerializeMap;
 
-        let mut state = serializer.serialize_struct("MappingRule", 4)?;
-        state.serialize_field("description", &self.description)?;
-        state.serialize_field("applications", &self.applications)?;
-        state.serialize_field("trigger", &self.trigger)?;
-        state.serialize_field("action", &self.action)?;
-        state.end()
+        let mut map = serializer.serialize_map(Some(self.0.len()))?;
+        for (trigger, outputs) in &self.0 {
+            let key = match trigger {
+                ChordTrigger::Key(k) => k.as_str().to_string(),
+                ChordTrigger::Chord { base, modifiers } => {
+                    let parts: Vec<String> = modifiers
+                        .iter()
+                        .map(|k| k.as_str().to_string())
+                        .chain(std::iter::once(base.as_str().to_string()))
+                        .collect();
+                    parts.join("+")
+                }
+            };
+
+            if outputs.len() == 1 {
+                map.serialize_entry(&key, &outputs[0])?;
+            } else {
+                map.serialize_entry(&key, outputs.as_slice())?;
+            }
+        }
+        map.end()
     }
 }
 
-/// The root configuration layout representing the file structure.
+// ---------------------------------------------------------------------------
+// RuleGroup -- app-scoped collection of mappings
+// ---------------------------------------------------------------------------
+
+/// A named group of key mappings, optionally scoped to specific applications.
+///
+/// When `apps` is empty the group applies globally (all applications).
+/// Groups are evaluated in definition order; the first group whose app
+/// scope matches is used.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuleGroup {
+    /// Human-readable name for documentation/debugging.  Not required.
+    #[serde(default)]
+    pub name: Option<String>,
+
+    /// Target applications (process names or bundle IDs).  An empty list
+    /// means the group applies globally.
+    #[serde(default)]
+    pub apps: Vec<String>,
+
+    /// Ordered chord-to-chords mappings.  The first matching rule wins.
+    #[serde(default)]
+    pub mappings: MappingTable,
+}
+
+// ---------------------------------------------------------------------------
+// AppConfig -- root configuration document
+// ---------------------------------------------------------------------------
+
+/// The root configuration layout representing the YAML file structure.
+///
+/// The document is a sequence of rule groups.  Groups are evaluated in
+/// definition order; within each group, mappings are evaluated in
+/// definition order.  The first matching rule wins.
+#[derive(Debug, Clone, Default)]
 pub struct AppConfig {
-    pub rules: Vec<MappingRule>,
+    pub groups: Vec<RuleGroup>,
+}
+
+/// Deserializes AppConfig from either:
+/// - A bare YAML sequence of rule groups (the primary format)
+/// - A YAML mapping with a "groups" key (for programmatic use)
+struct AppConfigVisitor;
+
+impl<'de> de::Visitor<'de> for AppConfigVisitor {
+    type Value = AppConfig;
+
+    fn expecting(
+        &self,
+        formatter: &mut std::fmt::Formatter,
+    ) -> std::fmt::Result {
+        formatter.write_str(
+            "a sequence of rule groups or a mapping with a 'groups' key",
+        )
+    }
+
+    fn visit_seq<A>(self, mut access: A) -> Result<Self::Value, A::Error>
+    where
+        A: de::SeqAccess<'de>,
+    {
+        let mut groups = Vec::new();
+        while let Some(group) = access.next_element::<RuleGroup>()? {
+            groups.push(group);
+        }
+        Ok(AppConfig { groups })
+    }
+
+    fn visit_map<M>(self, mut access: M) -> Result<Self::Value, M::Error>
+    where
+        M: de::MapAccess<'de>,
+    {
+        let mut groups = Vec::<RuleGroup>::new();
+        while let Some(key) = access.next_key::<String>()? {
+            if key == "groups" {
+                groups = access.next_value()?;
+            } else {
+                return Err(de::Error::unknown_field(&key, &["groups"]));
+            }
+        }
+        Ok(AppConfig { groups })
+    }
+}
+
+impl<'de> Deserialize<'de> for AppConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_any(AppConfigVisitor)
+    }
+}
+
+impl Serialize for AppConfig {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.groups.serialize(serializer)
+    }
 }
 
 impl AppConfig {
-    pub fn load_from_str(toml_str: &str) -> Result<Self, toml::de::Error> {
-        toml::from_str(toml_str)
+    pub fn load_from_str(yaml_str: &str) -> Result<Self, serde_yaml::Error> {
+        serde_yaml::from_str(yaml_str)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_empty_config() {
+        let config = AppConfig::load_from_str("groups: []").unwrap();
+        assert!(config.groups.is_empty());
+    }
+
+    #[test]
+    fn parse_global_group() {
+        let yaml = r#"
+- mappings:
+    capslock: left_control
+"#;
+        let config = AppConfig::load_from_str(yaml).unwrap();
+        assert_eq!(config.groups.len(), 1);
+
+        let group = &config.groups[0];
+        assert!(group.apps.is_empty()); // global
+
+        let mut mappings = group.mappings.iter();
+        let (trigger, outputs) = mappings.next().unwrap();
+        assert!(matches!(trigger, ChordTrigger::Key(Key::CapsLock)));
+        assert_eq!(outputs.len(), 1);
+        assert!(matches!(outputs[0], ChordTrigger::Key(Key::LeftControl)));
+        assert!(mappings.next().is_none());
+    }
+
+    #[test]
+    fn parse_app_scoped_group() {
+        let yaml = r#"
+- name: "iterm nav"
+  apps: [iTerm2]
+  mappings:
+    ctrl+h: left
+    ctrl+l: right
+"#;
+        let config = AppConfig::load_from_str(yaml).unwrap();
+        assert_eq!(config.groups.len(), 1);
+
+        let group = &config.groups[0];
+        assert_eq!(group.name.as_deref(), Some("iterm nav"));
+        assert_eq!(group.apps, vec!["iTerm2".to_string()]);
+
+        let mut mappings = group.mappings.iter();
+
+        // ctrl+h -> left
+        let (trigger, outputs) = mappings.next().unwrap();
+        match trigger {
+            ChordTrigger::Chord { base, modifiers } => {
+                assert!(matches!(base, Key::H));
+                assert_eq!(modifiers.len(), 1);
+                assert!(matches!(modifiers[0], Key::LeftControl));
+            }
+            _ => panic!("expected chord trigger"),
+        }
+        assert_eq!(outputs.len(), 1);
+        assert!(matches!(outputs[0], ChordTrigger::Key(Key::LeftArrow)));
+
+        // ctrl+l -> right
+        let (trigger, outputs) = mappings.next().unwrap();
+        match trigger {
+            ChordTrigger::Chord { base, modifiers } => {
+                assert!(matches!(base, Key::L));
+                assert_eq!(modifiers.len(), 1);
+            }
+            _ => panic!("expected chord trigger"),
+        }
+        assert!(matches!(outputs[0], ChordTrigger::Key(Key::RightArrow)));
+    }
+
+    #[test]
+    fn parse_multi_output() {
+        let yaml = r#"
+- mappings:
+    capslock: [left_control, capslock]
+"#;
+        let config = AppConfig::load_from_str(yaml).unwrap();
+        let group = &config.groups[0];
+
+        let mut mappings = group.mappings.iter();
+        let (_trigger, outputs) = mappings.next().unwrap();
+        assert_eq!(outputs.len(), 2);
+    }
+
+    #[test]
+    fn parse_multiple_groups() {
+        let yaml = r#"
+- mappings:
+    capslock: left_control
+
+- name: "iterm nav"
+  apps: [iTerm2]
+  mappings:
+    ctrl+h: left
+"#;
+        let config = AppConfig::load_from_str(yaml).unwrap();
+        assert_eq!(config.groups.len(), 2);
+        assert!(config.groups[0].apps.is_empty());
+        assert_eq!(config.groups[1].apps.len(), 1);
+    }
+
+    #[test]
+    fn parse_group_without_mappings() {
+        let yaml = r#"
+- name: "placeholder"
+"#;
+        let config = AppConfig::load_from_str(yaml).unwrap();
+        assert_eq!(config.groups.len(), 1);
+        assert!(config.groups[0].mappings.is_empty());
+    }
+
+    #[test]
+    fn parse_complex_config() {
+        // The real example config structure.
+        let yaml = r#"
+- mappings:
+    capslock: left_control
+    left_control: [left_control, capslock]
+
+- name: "iterm nav"
+  apps: [iTerm2]
+  mappings:
+    ctrl+h: left
+    ctrl+j: down
+    ctrl+k: up
+    ctrl+l: right
+
+- name: "global shortcuts"
+  mappings:
+    ctrl+shift+left: [cmd, left]
+    ctrl+shift+right: [cmd, right]
+"#;
+        let config = AppConfig::load_from_str(yaml).unwrap();
+        assert_eq!(config.groups.len(), 3);
+
+        // Global group: capslock swap
+        assert!(config.groups[0].apps.is_empty());
+        assert_eq!(config.groups[0].mappings.iter().count(), 2);
+
+        // iTerm group
+        assert_eq!(config.groups[1].apps, vec!["iTerm2".to_string()]);
+        assert_eq!(config.groups[1].mappings.iter().count(), 4);
+
+        // Global shortcuts
+        assert!(config.groups[2].apps.is_empty());
+        assert_eq!(config.groups[2].mappings.iter().count(), 2);
     }
 }

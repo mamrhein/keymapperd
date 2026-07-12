@@ -31,82 +31,82 @@ use crate::{key_names, mapping_cache::NativeAction, state::Lookup};
 #[repr(u16)]
 pub enum Key {
     // --- Modifiers ---
-    LeftControl  = 29,  // KEY_LEFTCTRL
+    LeftControl = 29,   // KEY_LEFTCTRL
     RightControl = 97,  // KEY_RIGHTCTRL
-    LeftShift    = 42,  // KEY_LEFTSHIFT
-    RightShift   = 54,  // KEY_RIGHTSHIFT
-    LeftAlt      = 56,  // KEY_LEFTALT
-    RightAlt     = 100, // KEY_RIGHTALT
-    LeftCommand  = 125, // KEY_LEFTMETA
+    LeftShift = 42,     // KEY_LEFTSHIFT
+    RightShift = 54,    // KEY_RIGHTSHIFT
+    LeftAlt = 56,       // KEY_LEFTALT
+    RightAlt = 100,     // KEY_RIGHTALT
+    LeftCommand = 125,  // KEY_LEFTMETA
     RightCommand = 126, // KEY_RIGHTMETA
-    CapsLock     = 58,  // KEY_CAPSLOCK
+    CapsLock = 58,      // KEY_CAPSLOCK
     // --- Editor / misc ---
-    Tab       = 15,  // KEY_TAB
-    Space     = 57,  // KEY_SPACE
-    Return    = 28,  // KEY_ENTER
-    Backspace = 14,  // KEY_BACKSPACE
-    Delete    = 111, // KEY_DELETE
-    Escape    = 1,   // KEY_ESC
+    Tab = 15,       // KEY_TAB
+    Space = 57,     // KEY_SPACE
+    Return = 28,    // KEY_ENTER
+    Backspace = 14, // KEY_BACKSPACE
+    Delete = 111,   // KEY_DELETE
+    Escape = 1,     // KEY_ESC
     // --- Navigation ---
-    UpArrow    = 103, // KEY_UP
-    DownArrow  = 108, // KEY_DOWN
-    LeftArrow  = 105, // KEY_LEFT
+    UpArrow = 103,    // KEY_UP
+    DownArrow = 108,  // KEY_DOWN
+    LeftArrow = 105,  // KEY_LEFT
     RightArrow = 106, // KEY_RIGHT
-    PageUp     = 104, // KEY_PAGEUP
-    PageDown   = 109, // KEY_PAGEDOWN
-    Home       = 102, // KEY_HOME
-    End        = 107, // KEY_END
+    PageUp = 104,     // KEY_PAGEUP
+    PageDown = 109,   // KEY_PAGEDOWN
+    Home = 102,       // KEY_HOME
+    End = 107,        // KEY_END
     // --- Function keys ---
-    F1  = 59,  // KEY_F1
-    F2  = 60,  // KEY_F2
-    F3  = 61,  // KEY_F3
-    F4  = 62,  // KEY_F4
-    F5  = 63,  // KEY_F5
-    F6  = 64,  // KEY_F6
-    F7  = 65,  // KEY_F7
-    F8  = 66,  // KEY_F8
-    F9  = 67,  // KEY_F9
-    F10 = 68,  // KEY_F10
-    F11 = 87,  // KEY_F11
-    F12 = 88,  // KEY_F12
+    F1 = 59,  // KEY_F1
+    F2 = 60,  // KEY_F2
+    F3 = 61,  // KEY_F3
+    F4 = 62,  // KEY_F4
+    F5 = 63,  // KEY_F5
+    F6 = 64,  // KEY_F6
+    F7 = 65,  // KEY_F7
+    F8 = 66,  // KEY_F8
+    F9 = 67,  // KEY_F9
+    F10 = 68, // KEY_F10
+    F11 = 87, // KEY_F11
+    F12 = 88, // KEY_F12
     // --- Letters ---
-    A = 30,  // KEY_A
-    B = 48,  // KEY_B
-    C = 46,  // KEY_C
-    D = 32,  // KEY_D
-    E = 18,  // KEY_E
-    F = 33,  // KEY_F
-    G = 34,  // KEY_G
-    H = 35,  // KEY_H
-    I = 23,  // KEY_I
-    J = 36,  // KEY_J
-    K = 37,  // KEY_K
-    L = 38,  // KEY_L
-    M = 50,  // KEY_M
-    N = 49,  // KEY_N
-    O = 24,  // KEY_O
-    P = 25,  // KEY_P
-    Q = 16,  // KEY_Q
-    R = 19,  // KEY_R
-    S = 31,  // KEY_S
-    T = 20,  // KEY_T
-    U = 22,  // KEY_U
-    V = 47,  // KEY_V
-    W = 17,  // KEY_W
-    X = 45,  // KEY_X
-    Y = 21,  // KEY_Y
-    Z = 44,  // KEY_Z
+    A = 30, // KEY_A
+    B = 48, // KEY_B
+    C = 46, // KEY_C
+    D = 32, // KEY_D
+    E = 18, // KEY_E
+    F = 33, // KEY_F
+    G = 34, // KEY_G
+    H = 35, // KEY_H
+    I = 23, // KEY_I
+    J = 36, // KEY_J
+    K = 37, // KEY_K
+    L = 38, // KEY_L
+    M = 50, // KEY_M
+    N = 49, // KEY_N
+    O = 24, // KEY_O
+    P = 25, // KEY_P
+    Q = 16, // KEY_Q
+    R = 19, // KEY_R
+    S = 31, // KEY_S
+    T = 20, // KEY_T
+    U = 22, // KEY_U
+    V = 47, // KEY_V
+    W = 17, // KEY_W
+    X = 45, // KEY_X
+    Y = 21, // KEY_Y
+    Z = 44, // KEY_Z
     // --- Numbers ---
-    Number1 = 2,   // KEY_1
-    Number2 = 3,   // KEY_2
-    Number3 = 4,   // KEY_3
-    Number4 = 5,   // KEY_4
-    Number5 = 6,   // KEY_5
-    Number6 = 7,   // KEY_6
-    Number7 = 8,   // KEY_7
-    Number8 = 9,   // KEY_8
-    Number9 = 10,  // KEY_9
-    Number0 = 11,  // KEY_0
+    Number1 = 2,  // KEY_1
+    Number2 = 3,  // KEY_2
+    Number3 = 4,  // KEY_3
+    Number4 = 5,  // KEY_4
+    Number5 = 6,  // KEY_5
+    Number6 = 7,  // KEY_6
+    Number7 = 8,  // KEY_7
+    Number8 = 9,  // KEY_8
+    Number9 = 10, // KEY_9
+    Number0 = 11, // KEY_0
 }
 
 impl Key {
@@ -133,38 +133,38 @@ impl Key {
     /// Return the canonical config-name for this key.
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::LeftControl  => "leftcontrol",
+            Self::LeftControl => "leftcontrol",
             Self::RightControl => "rightcontrol",
-            Self::LeftShift    => "leftshift",
-            Self::RightShift   => "rightshift",
-            Self::LeftAlt      => "leftalt",
-            Self::RightAlt     => "rightalt",
-            Self::LeftCommand  => "leftcommand",
+            Self::LeftShift => "leftshift",
+            Self::RightShift => "rightshift",
+            Self::LeftAlt => "leftalt",
+            Self::RightAlt => "rightalt",
+            Self::LeftCommand => "leftcommand",
             Self::RightCommand => "rightcommand",
-            Self::CapsLock     => "capslock",
-            Self::Tab    => "tab",
-            Self::Space  => "space",
+            Self::CapsLock => "capslock",
+            Self::Tab => "tab",
+            Self::Space => "space",
             Self::Return => "return",
             Self::Backspace => "backspace",
             Self::Delete => "delete",
             Self::Escape => "escape",
-            Self::UpArrow   => "uparrow",
+            Self::UpArrow => "uparrow",
             Self::DownArrow => "downarrow",
-            Self::LeftArrow  => "leftarrow",
+            Self::LeftArrow => "leftarrow",
             Self::RightArrow => "rightarrow",
-            Self::PageUp   => "pageup",
+            Self::PageUp => "pageup",
             Self::PageDown => "pagedown",
             Self::Home => "home",
-            Self::End  => "end",
-            Self::F1  => "f1",
-            Self::F2  => "f2",
-            Self::F3  => "f3",
-            Self::F4  => "f4",
-            Self::F5  => "f5",
-            Self::F6  => "f6",
-            Self::F7  => "f7",
-            Self::F8  => "f8",
-            Self::F9  => "f9",
+            Self::End => "end",
+            Self::F1 => "f1",
+            Self::F2 => "f2",
+            Self::F3 => "f3",
+            Self::F4 => "f4",
+            Self::F5 => "f5",
+            Self::F6 => "f6",
+            Self::F7 => "f7",
+            Self::F8 => "f8",
+            Self::F9 => "f9",
             Self::F10 => "f10",
             Self::F11 => "f11",
             Self::F12 => "f12",
@@ -210,38 +210,38 @@ impl Key {
     /// Parse a canonical name into a Key variant.
     pub fn from_canonical(name: &str) -> Option<Self> {
         match name {
-            "leftcontrol"  => Some(Self::LeftControl),
+            "leftcontrol" => Some(Self::LeftControl),
             "rightcontrol" => Some(Self::RightControl),
-            "leftshift"    => Some(Self::LeftShift),
-            "rightshift"   => Some(Self::RightShift),
-            "leftalt"      => Some(Self::LeftAlt),
-            "rightalt"     => Some(Self::RightAlt),
-            "leftcommand"  => Some(Self::LeftCommand),
+            "leftshift" => Some(Self::LeftShift),
+            "rightshift" => Some(Self::RightShift),
+            "leftalt" => Some(Self::LeftAlt),
+            "rightalt" => Some(Self::RightAlt),
+            "leftcommand" => Some(Self::LeftCommand),
             "rightcommand" => Some(Self::RightCommand),
-            "capslock"     => Some(Self::CapsLock),
-            "tab"       => Some(Self::Tab),
-            "space"     => Some(Self::Space),
-            "return"    => Some(Self::Return),
+            "capslock" => Some(Self::CapsLock),
+            "tab" => Some(Self::Tab),
+            "space" => Some(Self::Space),
+            "return" => Some(Self::Return),
             "backspace" => Some(Self::Backspace),
-            "delete"    => Some(Self::Delete),
-            "escape"    => Some(Self::Escape),
-            "uparrow"   => Some(Self::UpArrow),
+            "delete" => Some(Self::Delete),
+            "escape" => Some(Self::Escape),
+            "uparrow" => Some(Self::UpArrow),
             "downarrow" => Some(Self::DownArrow),
-            "leftarrow"  => Some(Self::LeftArrow),
+            "leftarrow" => Some(Self::LeftArrow),
             "rightarrow" => Some(Self::RightArrow),
-            "pageup"    => Some(Self::PageUp),
-            "pagedown"  => Some(Self::PageDown),
-            "home"      => Some(Self::Home),
-            "end"       => Some(Self::End),
-            "f1"  => Some(Self::F1),
-            "f2"  => Some(Self::F2),
-            "f3"  => Some(Self::F3),
-            "f4"  => Some(Self::F4),
-            "f5"  => Some(Self::F5),
-            "f6"  => Some(Self::F6),
-            "f7"  => Some(Self::F7),
-            "f8"  => Some(Self::F8),
-            "f9"  => Some(Self::F9),
+            "pageup" => Some(Self::PageUp),
+            "pagedown" => Some(Self::PageDown),
+            "home" => Some(Self::Home),
+            "end" => Some(Self::End),
+            "f1" => Some(Self::F1),
+            "f2" => Some(Self::F2),
+            "f3" => Some(Self::F3),
+            "f4" => Some(Self::F4),
+            "f5" => Some(Self::F5),
+            "f6" => Some(Self::F6),
+            "f7" => Some(Self::F7),
+            "f8" => Some(Self::F8),
+            "f9" => Some(Self::F9),
             "f10" => Some(Self::F10),
             "f11" => Some(Self::F11),
             "f12" => Some(Self::F12),
@@ -303,8 +303,9 @@ impl<'de> Deserialize<'de> for Key {
         let s = String::deserialize(deserializer)?;
         let l = s.to_lowercase();
         let canonical = key_names::resolve_alias(&l).unwrap_or(&l);
-        Self::from_canonical(canonical)
-            .ok_or_else(|| serde::de::Error::custom(key_names::unknown_key_error(&s)))
+        Self::from_canonical(canonical).ok_or_else(|| {
+            serde::de::Error::custom(key_names::unknown_key_error(&s))
+        })
     }
 }
 
@@ -352,17 +353,18 @@ fn find_keyboard_device() -> Result<Device, Box<dyn std::error::Error>> {
     }
 
     if candidates.is_empty() {
-        return Err(
-            "No keyboard device found in /dev/input/. \
+        return Err("No keyboard device found in /dev/input/. \
              Ensure you have read permission on /dev/input/event*"
-                .into(),
-        );
+            .into());
     }
 
     // Prefer devices whose name contains common keyboard indicators.
     let prefer_keyword = |name: &str| {
         let l = name.to_lowercase();
-        l.contains("keyboard") || l.contains("kbd") || l.contains("at set") || l.contains("apple")
+        l.contains("keyboard")
+            || l.contains("kbd")
+            || l.contains("at set")
+            || l.contains("apple")
     };
 
     if let Some((path, dev_name, device)) = candidates
