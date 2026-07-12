@@ -14,15 +14,13 @@ mod macos;
 #[cfg(target_os = "windows")]
 mod windows;
 
+// Only the public API surface is re-exported.  Internal helpers (signal
+// handlers, static flags, device discovery) stay private to the platform
+// module.
+
 #[cfg(target_os = "linux")]
-pub(crate) use linux::Key;
-#[cfg(target_os = "linux")]
-pub(crate) use linux::*;
+pub(crate) use linux::{Key, start_mapping};
 #[cfg(target_os = "macos")]
-pub(crate) use macos::Key;
-#[cfg(target_os = "macos")]
-pub(crate) use macos::*;
+pub(crate) use macos::{Key, start_mapping};
 #[cfg(target_os = "windows")]
-pub(crate) use windows::Key;
-#[cfg(target_os = "windows")]
-pub(crate) use windows::*;
+pub(crate) use windows::{Key, start_mapping};
