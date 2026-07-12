@@ -7,15 +7,6 @@
 // $Source$
 // $Revision$
 
-// ---------------------------------------------------------------------------
-// Copyright:   (c) 2026 ff. Michael Amrhein (michael@adrhinum.de)
-// License:     This program is part of a larger application. For license
-//              details please read the file LICENSE.TXT provided together
-//              with the application.
-// ---------------------------------------------------------------------------
-// $Source$
-// $Revision$
-
 use std::path::{Path, PathBuf};
 
 const APP_NAME: &str = "keymapperd";
@@ -52,8 +43,8 @@ pub fn find_config_path() -> Option<PathBuf> {
 /// user knows where to create their configuration.
 pub fn print_search_locations() {
     eprintln!(
-        "No configuration file found ({CONFIG_FILE}). \
-         Please create it in one of the following locations:"
+        "No configuration file found ({CONFIG_FILE}). Please create it in \
+         one of the following locations:"
     );
 
     if let Some(dir) = platform_config_dir() {
@@ -69,7 +60,8 @@ pub fn print_search_locations() {
 #[cfg(target_os = "macos")]
 fn platform_config_dir() -> Option<PathBuf> {
     // ~/Library/Application Support/keymapperd
-    dirs::home_dir().map(|h| h.join("Library").join("Application Support").join(APP_NAME))
+    dirs::home_dir()
+        .map(|h| h.join("Library").join("Application Support").join(APP_NAME))
 }
 
 #[cfg(target_os = "linux")]
