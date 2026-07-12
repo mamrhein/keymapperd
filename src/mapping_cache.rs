@@ -11,16 +11,6 @@ use std::{collections::HashMap, fs, path::Path};
 
 use crate::config::{AppConfig, ChordTrigger, Key, KeyAction};
 
-/// Modifier bitmask layout (u8):
-///
-/// bit 0: left control      bit 1: right control
-/// bit 2: left shift        bit 3: right shift
-/// bit 4: left alt          bit 5: right alt
-/// bit 6: left command/win  bit 7: right command/win
-///
-/// When a rule specifies "ctrl" (unspecified side), both bits 0 and 1 are
-/// set so the rule matches either physical control key.
-
 /// A compiled chord: specific modifier requirement + base key.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NativeChord {

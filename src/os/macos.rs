@@ -132,6 +132,7 @@ impl Key {
     /// modifier (e.g. "ctrl" meaning either side), the bit is set for
     /// whichever physical key matches — handled by the alias layer so
     /// that "leftctrl" and "rightctrl" each resolve to their own bit.
+    #[allow(unused)]
     pub const fn as_modifier_bits(self) -> u8 {
         match self {
             // bit 0: left control
@@ -520,9 +521,8 @@ unsafe extern "C-unwind" fn macos_keyboard_callback_ffi(
     let is_down = _type == CGEventType::KeyDown;
 
     // Extract currently pressed modifier groups.
-    let pressed_modifiers = extract_modifier_bits(unsafe {
-        CGEvent::flags(Some(event.as_ref()))
-    });
+    let pressed_modifiers =
+        extract_modifier_bits(unsafe { CGEvent::flags(Some(event.as_ref())) });
 
     // Resolve the remapping through the trait interface.  Clone the action
     // out so we can drop the read lock before expensive CGEvent operations.

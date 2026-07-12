@@ -80,7 +80,7 @@ impl Lookup for RuntimeState {
     fn global(&self, key: u16, modifiers: u8) -> Option<&NativeAction> {
         // Check chord rules first.
         if let Some(action) =
-            find_chord(&self.lookup_cache.global_chords(), key, modifiers)
+            find_chord(self.lookup_cache.global_chords(), key, modifiers)
         {
             return Some(action);
         }
