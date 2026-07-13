@@ -200,3 +200,346 @@ fn expand_modifier_bits(modifiers: &[Key]) -> Vec<u8> {
 
     results
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Bit positions per the header comment:
+    // bit 0: left control,   bit 1: right control
+    // bit 2: left shift,     bit 3: right shift
+    // bit 4: left alt,       bit 5: right alt
+    // bit 6: left command,   bit 7: right command
+
+    // -----------------------------------------------------------------------
+    // expand_modifier_bits
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn expand_no_modifiers() {
+        let result = expand_modifier_bits(&[]);
+        assert_eq!(result, vec![0]);
+    }
+
+    #[test]
+    fn expand_single_generic_modifier() {
+        // LeftControl maps to modifier group [0, 1], so "either side" matches.
+        let result = expand_modifier_bits(&[Key::LeftControl]);
+        assert_eq!(result, vec![1 << 0, 1 << 1]);
+    }
+
+    #[test]
+    fn expand_single_specific_modifier() {
+        // RightControl also maps to group [0, 1] — the enum variant does not
+        // narrow matching; narrowing only affects output emission.
+        let result = expand_modifier_bits(&[Key::RightControl]);
+        assert_eq!(result, vec![1 << 0, 1 << 1]);
+    }
+
+    #[test]
+    fn expand_two_modifiers() {
+        // Ctrl + Shift → cartesian product of {0,1} × {2,3}.
+        let result = expand_modifier_bits(&[Key::LeftControl, Key::LeftShift]);
+        assert_eq!(
+            result,
+            vec![
+                (1 << 0) | (1 << 2), // left ctrl + left shift
+                (1 << 0) | (1 << 3), // left ctrl + right shift
+                (1 << 1) | (1 << 2), // right ctrl + left shift
+                (1 << 1) | (1 << 3), // right ctrl + right shift
+            ]
+        );
+    }
+
+    #[test]
+    fn expand_three_modifiers() {
+        // Ctrl + Shift + Alt → 2×2×2 = 8 variants.
+        let result = expand_modifier_bits(&[
+            Key::LeftControl,
+            Key::LeftShift,
+            Key::LeftAlt,
+        ]);
+        assert_eq!(result.len(), 8);
+    }
+
+    #[test]
+    fn expand_non_modifier_in_modifiers_list() {
+        // Non-modifier keys return None from as_modifier_positions, falling
+        // back to vec![0].  In the cartesian product this means bit 0 is
+        // set — a quirk of the fallback path.
+        let result = expand_modifier_bits(&[Key::A]);
+        assert_eq!(result, vec![1 << 0]);
+    }
+
+    // -----------------------------------------------------------------------
+    // compile_modifier_bits (output side — specific single bit)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn compile_modifier_bits_empty() {
+        assert_eq!(compile_modifier_bits(&[]), 0);
+    }
+
+    #[test]
+    fn compile_modifier_bits_single() {
+        assert_eq!(compile_modifier_bits(&[Key::LeftControl]), 1 << 0);
+        assert_eq!(compile_modifier_bits(&[Key::RightControl]), 1 << 1);
+        assert_eq!(compile_modifier_bits(&[Key::LeftShift]), 1 << 2);
+        assert_eq!(compile_modifier_bits(&[Key::RightShift]), 1 << 3);
+        assert_eq!(compile_modifier_bits(&[Key::LeftAlt]), 1 << 4);
+        assert_eq!(compile_modifier_bits(&[Key::RightAlt]), 1 << 5);
+        assert_eq!(compile_modifier_bits(&[Key::LeftCommand]), 1 << 6);
+        assert_eq!(compile_modifier_bits(&[Key::RightCommand]), 1 << 7);
+    }
+
+    #[test]
+    fn compile_modifier_bits_multiple() {
+        assert_eq!(
+            compile_modifier_bits(&[Key::LeftControl, Key::LeftShift]),
+            (1 << 0) | (1 << 2)
+        );
+    }
+
+    #[test]
+    fn compile_modifier_bits_non_modifier_ignored() {
+        // Non-modifiers don't contribute a bit.
+        assert_eq!(compile_modifier_bits(&[Key::A]), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // compile_from_config — end-to-end compilation
+    // -----------------------------------------------------------------------
+
+    fn build_cache(yaml: &str) -> RuntimeLookupCache {
+        let config = AppConfig::load_from_str(yaml).unwrap();
+        RuntimeLookupCache::compile_from_config(&config)
+    }
+
+    #[test]
+    fn compile_empty_config() {
+        let cache = build_cache("groups: []");
+        assert!(cache.global_rules().is_empty());
+        assert!(cache.process_rules("any").is_none());
+    }
+
+    #[test]
+    fn compile_global_rule() {
+        let yaml = r#"
+- mappings:
+    CapsLock: LeftControl
+"#;
+        let cache = build_cache(yaml);
+        assert_eq!(cache.global_rules().len(), 1);
+        assert!(cache.process_rules("any").is_none());
+
+        let rule = &cache.global_rules()[0];
+        assert_eq!(rule.base, Key::CapsLock.as_native());
+        assert_eq!(rule.modifiers, 0);
+        assert_eq!(rule.outputs.len(), 1);
+        assert_eq!(rule.outputs[0].base, Key::LeftControl.as_native());
+    }
+
+    #[test]
+    fn compile_app_scoped_rule() {
+        let yaml = r#"
+- name: "nav"
+  apps: [MyApp]
+  mappings:
+    Ctrl+H: LeftArrow
+"#;
+        let cache = build_cache(yaml);
+        assert!(cache.global_rules().is_empty());
+
+        // Exact case-sensitive app match.
+        let rules = cache.process_rules("MyApp").expect("MyApp should exist");
+        assert!(!rules.is_empty());
+
+        // Wrong case should not match.
+        assert!(cache.process_rules("myapp").is_none());
+        assert!(cache.process_rules("MYAPP").is_none());
+    }
+
+    #[test]
+    fn compile_modifier_expansion_in_rules() {
+        // "Ctrl+H" expands to two rules: one for left ctrl, one for right.
+        let yaml = r#"
+- mappings:
+    Ctrl+H: LeftArrow
+"#;
+        let cache = build_cache(yaml);
+        assert_eq!(cache.global_rules().len(), 2);
+
+        let bases: Vec<u16> =
+            cache.global_rules().iter().map(|r| r.base).collect();
+        let mods: Vec<u8> =
+            cache.global_rules().iter().map(|r| r.modifiers).collect();
+
+        assert!(bases.contains(&Key::H.as_native()));
+        assert_eq!(mods.len(), 2);
+        assert!(mods.contains(&(1 << 0))); // left control
+        assert!(mods.contains(&(1 << 1))); // right control
+    }
+
+    #[test]
+    fn compile_chord_output() {
+        let yaml = r#"
+- mappings:
+    CapsLock: Cmd+LeftArrow
+"#;
+        let cache = build_cache(yaml);
+        let rule = &cache.global_rules()[0];
+
+        assert_eq!(rule.outputs.len(), 1);
+        assert_eq!(rule.outputs[0].base, Key::LeftArrow.as_native());
+        // Cmd resolves to LeftCommand → bit 6.
+        assert_eq!(rule.outputs[0].modifiers, 1 << 6);
+    }
+
+    #[test]
+    fn compile_multi_output() {
+        let yaml = r#"
+- mappings:
+    CapsLock: [Cmd+T, F1]
+"#;
+        let cache = build_cache(yaml);
+        let rule = &cache.global_rules()[0];
+
+        assert_eq!(rule.outputs.len(), 2);
+        assert_eq!(rule.outputs[0].base, Key::T.as_native());
+        assert_eq!(rule.outputs[0].modifiers, 1 << 6); // Cmd
+        assert_eq!(rule.outputs[1].base, Key::F1.as_native());
+        assert_eq!(rule.outputs[1].modifiers, 0);
+    }
+
+    #[test]
+    fn compile_multiple_groups_accumulate() {
+        let yaml = r#"
+- mappings:
+    CapsLock: LeftControl
+
+- name: "app rules"
+  apps: [MyApp]
+  mappings:
+    A: B
+"#;
+        let cache = build_cache(yaml);
+        assert_eq!(cache.global_rules().len(), 1);
+
+        let rules = cache.process_rules("MyApp").expect("MyApp rules");
+        assert_eq!(rules.len(), 1);
+    }
+
+    #[test]
+    fn compile_group_without_mappings_skipped() {
+        let yaml = r#"
+- name: "placeholder"
+"#;
+        let cache = build_cache(yaml);
+        assert!(cache.global_rules().is_empty());
+    }
+
+    #[test]
+    fn compile_first_match_wins_order() {
+        // Two rules for the same base key but different modifiers.  Order
+        // is preserved so first-match-wins semantics work at runtime.
+        let yaml = r#"
+- mappings:
+    Ctrl+Shift+A: F1
+    Ctrl+A: F2
+    A: F3
+"#;
+        let cache = build_cache(yaml);
+        let rules = cache.global_rules();
+
+        // Ctrl+Shift+A expands to 2×2 = 4 rules (ctrl × shift).
+        // Ctrl+A expands to 2 rules (ctrl).
+        // A has no modifiers → 1 rule.
+        assert_eq!(rules.len(), 7);
+
+        // The first entry should be the Ctrl+Shift+A rule.
+        assert_eq!(rules[0].base, Key::A.as_native());
+    }
+
+    #[test]
+    fn compile_same_rule_for_multiple_apps() {
+        let yaml = r#"
+- name: "multi-app"
+  apps: [AppA, AppB]
+  mappings:
+    CapsLock: LeftControl
+"#;
+        let cache = build_cache(yaml);
+
+        let rules_a = cache.process_rules("AppA").expect("AppA");
+        let rules_b = cache.process_rules("AppB").expect("AppB");
+
+        assert_eq!(rules_a.len(), rules_b.len());
+        assert!(!rules_a.is_empty());
+    }
+
+    #[test]
+    fn compile_modifier_only_trigger() {
+        // A bare modifier key (no chord) as a trigger.
+        let yaml = r#"
+- mappings:
+    CapsLock: LeftAlt+L
+"#;
+        let cache = build_cache(yaml);
+        let rule = &cache.global_rules()[0];
+
+        assert_eq!(rule.base, Key::CapsLock.as_native());
+        assert_eq!(rule.modifiers, 0); // bare key, no modifiers
+        assert_eq!(rule.outputs.len(), 1);
+        assert_eq!(rule.outputs[0].base, Key::L.as_native());
+        assert_eq!(rule.outputs[0].modifiers, 1 << 4); // LeftAlt → bit 4
+    }
+
+    #[test]
+    fn compile_full_modifier_expansion_count() {
+        // Ctrl → 2 variants (left/right), Shift → 2, Alt → 2.
+        // Ctrl+Shift+Alt+A → 2×2×2 = 8 rules.
+        let yaml = r#"
+- mappings:
+    Ctrl+Shift+Alt+A: F12
+"#;
+        let cache = build_cache(yaml);
+        assert_eq!(cache.global_rules().len(), 8);
+
+        // All rules should have base = A and output = F12.
+        for rule in cache.global_rules() {
+            assert_eq!(rule.base, Key::A.as_native());
+            assert_eq!(rule.outputs[0].base, Key::F12.as_native());
+        }
+    }
+
+    #[test]
+    fn compile_duplicate_triggers_in_separate_groups() {
+        // Two groups define the same mapping.  Both get compiled; the first
+        // rule in the list wins at runtime (find_match scans sequentially).
+        let yaml = r#"
+- mappings:
+    CapsLock: LeftControl
+
+- mappings:
+    CapsLock: RightControl
+"#;
+        let cache = build_cache(yaml);
+
+        // Two groups, each with one CapsLock rule.
+        assert_eq!(cache.global_rules().len(), 2);
+
+        // The first rule should output LeftControl, the second RightControl.
+        assert_eq!(
+            cache.global_rules()[0].outputs[0].base,
+            Key::LeftControl.as_native()
+        );
+        assert_eq!(
+            cache.global_rules()[1].outputs[0].base,
+            Key::RightControl.as_native()
+        );
+    }
+}
