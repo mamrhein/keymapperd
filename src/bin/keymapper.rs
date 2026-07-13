@@ -7,65 +7,74 @@
 // $Source$
 // $Revision$
 
-use std::process;
+use std::path::PathBuf;
 
-fn main() {
-    let args: Vec<String> = std::env::args().collect();
+use clap::{Parser, Subcommand};
 
-    if args.len() < 3 || args[1] != "config" {
-        eprintln!("Usage: keymapper config <subcommand>");
-        eprintln!();
-        eprintln!("Subcommands:");
-        eprintln!("  list    Print the configuration file to stdout");
-        eprintln!("  check   Validate and diagnose the configuration");
-        process::exit(1);
-    }
-
-    match args[2].as_str() {
-        "list" => cmd_config_list(),
-        "check" => cmd_config_check(),
-        other => {
-            eprintln!("Unknown subcommand: {other}");
-            eprintln!();
-            eprintln!("Available subcommands: list, check");
-            process::exit(1);
-        }
-    }
+/// CLI utility for managing the keymapperd configuration.
+#[derive(Parser)]
+#[command(name = "keymapper")]
+#[command(version)]
+#[command(propagate_version = true)]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
 }
 
-fn load_config() -> (std::path::PathBuf, String) {
-    let Some(path) = keymapperd::config_path::find_config_path() else {
-        keymapperd::config_path::print_search_locations();
-        process::exit(1);
-    };
-
-    let contents = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(err) => {
-            eprintln!("Failed to read {}: {err}", path.display());
-            process::exit(1);
-        }
-    };
-
-    (path, contents)
+#[derive(Subcommand)]
+enum Commands {
+    /// Configuration file management.
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommands,
+    },
 }
 
-fn cmd_config_list() {
-    let (_path, contents) = load_config();
+#[derive(Subcommand)]
+enum ConfigCommands {
+    /// Print the configuration file to stdout.
+    List,
+
+    /// Validate and diagnose the configuration.
+    Check,
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let cli = Cli::parse();
+
+    match cli.command {
+        Commands::Config { command } => match command {
+            ConfigCommands::List => cmd_config_list()?,
+            ConfigCommands::Check => cmd_config_check()?,
+        },
+    }
+
+    Ok(())
+}
+
+fn load_config() -> Result<(PathBuf, String), Box<dyn std::error::Error>> {
+    let path =
+        keymapperd::config_path::find_config_path().ok_or_else(|| {
+            keymapperd::config_path::print_search_locations();
+            "configuration file not found".to_string()
+        })?;
+
+    let contents = fs_err::read_to_string(&path)?;
+
+    Ok((path, contents))
+}
+
+fn cmd_config_list() -> Result<(), Box<dyn std::error::Error>> {
+    let (_path, contents) = load_config()?;
     print!("{contents}");
+    Ok(())
 }
 
-fn cmd_config_check() {
-    let (path, contents) = load_config();
+fn cmd_config_check() -> Result<(), Box<dyn std::error::Error>> {
+    let (path, contents) = load_config()?;
 
-    let config = match keymapperd::config::AppConfig::load_from_str(&contents)
-    {
-        Ok(c) => c,
-        Err(err) => {
-            eprintln!("Failed to parse {}: {err}", path.display());
-            process::exit(1);
-        }
-    };
+    let config = keymapperd::config::AppConfig::load_from_str(&contents)
+        .map_err(|err| format!("failed to parse {}: {err}", path.display()))?;
 
     let diagnostics = config.check();
 
@@ -77,4 +86,6 @@ fn cmd_config_check() {
             println!("  {} {}", i + 1, msg);
         }
     }
+
+    Ok(())
 }

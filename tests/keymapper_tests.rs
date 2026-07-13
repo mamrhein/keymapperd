@@ -7,15 +7,6 @@
 // $Source$
 // $Revision$
 
-// ---------------------------------------------------------------------------
-// Copyright:   (c) 2026 ff. Michael Amrhein (michael@adrhinum.de)
-// License:     This program is part of a larger application. For license
-//              details please read the file LICENSE.TXT provided together
-//              with the application.
-// ---------------------------------------------------------------------------
-// $Source$
-// $Revision$
-
 use std::{env, path::PathBuf, process::Command};
 
 /// Path to the compiled keymapper binary.
@@ -135,7 +126,7 @@ fn check_no_config_file() {
 fn check_invalid_yaml() {
     let dir = write_config_dir("invalid", "::: bad yaml content [");
     let stderr = run_check_fails_in_dir(&dir);
-    assert!(stderr.contains("Failed to parse"));
+    assert!(stderr.contains("failed to parse"));
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -298,7 +289,8 @@ fn no_args_shows_usage() {
 
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Usage: keymapper config"));
+    // clap prints "Usage: keymapper" with the command list.
+    assert!(stderr.contains("Usage: keymapper"));
 }
 
 #[test]
@@ -310,7 +302,8 @@ fn unknown_subcommand_shows_error() {
 
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Unknown subcommand"));
+    // clap reports unknown subcommands with "error:".
+    assert!(stderr.starts_with("error:"));
 }
 
 #[test]
@@ -323,6 +316,6 @@ fn check_invalid_key_names() {
 "#,
     );
     let stderr = run_check_fails_in_dir(&dir);
-    assert!(stderr.contains("Failed to parse"));
+    assert!(stderr.contains("failed to parse"));
     std::fs::remove_dir_all(&dir).ok();
 }
