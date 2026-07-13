@@ -7,7 +7,7 @@
 // $Source$
 // $Revision$
 
-use crate::mapping_cache::{NativeAction, NativeChord, RuntimeLookupCache};
+use crate::mapping_cache::{CompiledRule, NativeKey, RuntimeLookupCache};
 
 /// Minimal interface for OS event-loop callbacks and state managers.
 /// Deliberately small so that platform modules never learn about the
@@ -15,19 +15,17 @@ use crate::mapping_cache::{NativeAction, NativeChord, RuntimeLookupCache};
 pub trait Lookup: Send + Sync {
     /// Best-effort lookup scoped to the given application name (lower-cased).
     ///
-    /// `modifiers` is a bitmask of currently pressed modifier groups.
-    /// Chord rules are checked first; single-key rules act as fallback.
+    /// `modifiers` is the exact bitmask of currently pressed modifier keys.
+    /// Returns the output events if a matching rule is found.
     fn for_app(
         &self,
         app: &str,
         key: u16,
         modifiers: u8,
-    ) -> Option<&NativeAction>;
+    ) -> Option<&[NativeKey]>;
 
     /// Global (application-agnostic) lookup.
-    ///
-    /// `modifiers` is a bitmask of currently pressed modifier groups.
-    fn global(&self, key: u16, modifiers: u8) -> Option<&NativeAction>;
+    fn global(&self, key: u16, modifiers: u8) -> Option<&[NativeKey]>;
 
     /// Name of the currently foreground application.
     fn active_app(&self) -> &str;
@@ -62,31 +60,16 @@ impl Lookup for RuntimeState {
         app: &str,
         key: u16,
         modifiers: u8,
-    ) -> Option<&NativeAction> {
-        // Check chord rules first (linear scan, first match wins).
-        if let Some(chords) = self.lookup_cache.process_chords().get(app) {
-            if let Some(action) = find_chord(chords, key, modifiers) {
-                return Some(action);
-            }
+    ) -> Option<&[NativeKey]> {
+        if let Some(rules) = self.lookup_cache.process_rules(app) {
+            find_match(rules, key, modifiers)
+        } else {
+            None
         }
-
-        // Fall back to single-key HashMap lookup.
-        self.lookup_cache
-            .process_map()
-            .get(app)
-            .and_then(|m| m.get(&key))
     }
 
-    fn global(&self, key: u16, modifiers: u8) -> Option<&NativeAction> {
-        // Check chord rules first.
-        if let Some(action) =
-            find_chord(self.lookup_cache.global_chords(), key, modifiers)
-        {
-            return Some(action);
-        }
-
-        // Fall back to single-key HashMap lookup.
-        self.lookup_cache.global_map().get(&key)
+    fn global(&self, key: u16, modifiers: u8) -> Option<&[NativeKey]> {
+        find_match(self.lookup_cache.global_rules(), key, modifiers)
     }
 
     fn active_app(&self) -> &str {
@@ -102,20 +85,15 @@ impl Lookup for RuntimeState {
     }
 }
 
-/// Scan a list of chord rules and return the first match.
-///
-/// A rule matches when all its required modifier bits are present in the
-/// pressed modifiers: `(pressed & required) == required`.
-fn find_chord(
-    chords: &[(NativeChord, NativeAction)],
+/// Scan a list of compiled rules and return the first exact match.
+fn find_match(
+    rules: &[CompiledRule],
     key: u16,
     modifiers: u8,
-) -> Option<&NativeAction> {
-    chords.iter().find_map(|(chord, action)| {
-        if chord.base == key
-            && (modifiers & chord.modifiers) == chord.modifiers
-        {
-            Some(action)
+) -> Option<&[NativeKey]> {
+    rules.iter().find_map(|rule| {
+        if rule.base == key && rule.modifiers == modifiers {
+            Some(rule.outputs.as_slice())
         } else {
             None
         }

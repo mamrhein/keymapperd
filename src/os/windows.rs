@@ -10,6 +10,8 @@
 use std::{
     ptr::null_mut,
     sync::{Arc, OnceLock},
+    thread,
+    time::Duration,
 };
 
 use parking_lot::RwLock;
@@ -18,19 +20,20 @@ use windows_sys::Windows::Win32::{
     System::LibraryLoader::GetModuleHandleW,
     UI::{
         Input::KeyboardAndMouse::{
-            GetKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
-            KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, SendInput, VIRTUAL_KEY,
+            GetAsyncKeyState, GetKeyState, INPUT, INPUT_0, INPUT_KEYBOARD,
+            KEYBDINPUT, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, SendInput,
+            VIRTUAL_KEY,
         },
         WindowsAndMessaging::{
             CallNextHookEx, GetMessageW, HHOOK, HINSTANCE, KBDLLHOOKSTRUCT,
-            LPARAM, LRESULT, MSG, SetWindowsHookExW, UnhookWindowsHookEx,
-            WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
-            WPARAM,
+            LPARAM, LRESULT, MSG, PostQuitMessage, SetWindowsHookExW,
+            UnhookWindowsHookEx, WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP,
+            WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP, WPARAM,
         },
     },
 };
 
-use crate::{key_names, mapping_cache::NativeAction, state::Lookup};
+use crate::{key_names, mapping_cache::NativeKey, state::Lookup};
 
 // ---------------------------------------------------------------------------
 // Platform-specific Key enum — discriminants ARE the VK_* codes
@@ -68,7 +71,7 @@ pub enum Key {
     PageUp = 0x21,     // VK_PRIOR
     PageDown = 0x22,   // VK_NEXT
     Home = 0x23,       // VK_HOME
-    End = 0x23,        // VK_END (shares VK code with Home)
+    End = 0x24,        // VK_END
     // --- Function keys ---
     F1 = 0x70,  // VK_F1
     F2 = 0x71,  // VK_F2
@@ -129,18 +132,29 @@ impl Key {
         self as VIRTUAL_KEY
     }
 
-    /// Return the modifier-bitmask contribution of this key.
-    pub const fn as_modifier_bits(self) -> u8 {
+    /// Return the modifier bit **position** (0–7) for this key.
+    pub const fn as_modifier_bit(self) -> Option<u8> {
         match self {
-            Self::LeftControl => 1 << 0,
-            Self::RightControl => 1 << 1,
-            Self::LeftShift => 1 << 2,
-            Self::RightShift => 1 << 3,
-            Self::LeftAlt => 1 << 4,
-            Self::RightAlt => 1 << 5,
-            Self::LeftCommand => 1 << 6,
-            Self::RightCommand => 1 << 7,
-            _ => 0,
+            Self::LeftControl => Some(0),
+            Self::RightControl => Some(1),
+            Self::LeftShift => Some(2),
+            Self::RightShift => Some(3),
+            Self::LeftAlt => Some(4),
+            Self::RightAlt => Some(5),
+            Self::LeftCommand => Some(6),
+            Self::RightCommand => Some(7),
+            _ => None,
+        }
+    }
+
+    /// Return the possible modifier bit positions for this key.
+    pub fn as_modifier_positions(self) -> Option<Vec<u8>> {
+        match self {
+            Self::LeftControl | Self::RightControl => Some(vec![0, 1]),
+            Self::LeftShift | Self::RightShift => Some(vec![2, 3]),
+            Self::LeftAlt | Self::RightAlt => Some(vec![4, 5]),
+            Self::LeftCommand | Self::RightCommand => Some(vec![6, 7]),
+            _ => None,
         }
     }
 
@@ -324,6 +338,138 @@ impl<'de> Deserialize<'de> for Key {
 }
 
 // ---------------------------------------------------------------------------
+// Modifier handling — specific key bits via GetAsyncKeyState
+// ---------------------------------------------------------------------------
+
+/// Build a specific modifier bitmask by polling each key individually.
+/// Windows `GetAsyncKeyState` can distinguish left vs right for all
+/// modifier keys.
+fn extract_modifier_bits() -> u8 {
+    let mut bits: u8 = 0;
+    // VK_LCONTROL (0xA2)
+    if unsafe { GetAsyncKeyState(0xA2) } < 0 {
+        bits |= 1 << 0;
+    }
+    // VK_RCONTROL (0xA3)
+    if unsafe { GetAsyncKeyState(0xA3) } < 0 {
+        bits |= 1 << 1;
+    }
+    // VK_LSHIFT (0xA0)
+    if unsafe { GetAsyncKeyState(0xA0) } < 0 {
+        bits |= 1 << 2;
+    }
+    // VK_RSHIFT (0xA1)
+    if unsafe { GetAsyncKeyState(0xA1) } < 0 {
+        bits |= 1 << 3;
+    }
+    // VK_LMENU (0xA4)
+    if unsafe { GetAsyncKeyState(0xA4) } < 0 {
+        bits |= 1 << 4;
+    }
+    // VK_RMENU (0xA5)
+    if unsafe { GetAsyncKeyState(0xA5) } < 0 {
+        bits |= 1 << 5;
+    }
+    // VK_LWIN (0x5B)
+    if unsafe { GetAsyncKeyState(0x5B) } < 0 {
+        bits |= 1 << 6;
+    }
+    // VK_RWIN (0x5C)
+    if unsafe { GetAsyncKeyState(0x5C) } < 0 {
+        bits |= 1 << 7;
+    }
+    bits
+}
+
+/// Map a modifier bit position back to the native VIRTUAL_KEY for emission.
+fn modifier_bit_to_vk(bit: u8) -> Option<VIRTUAL_KEY> {
+    match bit {
+        0 => Some(0xA2), // VK_LCONTROL
+        1 => Some(0xA3), // VK_RCONTROL
+        2 => Some(0xA0), // VK_LSHIFT
+        3 => Some(0xA1), // VK_RSHIFT
+        4 => Some(0xA4), // VK_LMENU
+        5 => Some(0xA5), // VK_RMENU
+        6 => Some(0x5B), // VK_LWIN
+        7 => Some(0x5C), // VK_RWIN
+        _ => None,
+    }
+}
+
+/// Return true when the given virtual-key code corresponds to an extended
+/// hardware key (scan-code prefixed with 0xE0).
+fn is_extended_key(vk: VIRTUAL_KEY) -> bool {
+    matches!(
+        vk,
+        // Right-side modifiers
+        0xA3 | 0xA5 // VK_RCONTROL, VK_RMENU
+            // Navigation cluster
+            | 0x21 | 0x22 | 0x23 | 0x25
+            ..=0x28 // PgUp, PgDn, Home/End, arrows
+            | 0x2D | 0x2E // VK_INSERT, VK_DELETE
+    )
+}
+
+/// Inject a synthetic key event via `SendInput`.
+fn simulate_key_event(vk: VIRTUAL_KEY, is_key_up: bool) {
+    let mut flags = if is_key_up { KEYEVENTF_KEYUP } else { 0 };
+    if is_extended_key(vk) {
+        flags |= KEYEVENTF_EXTENDEDKEY;
+    }
+
+    let mut input = INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: vk,
+                wScan: 0,
+                dwFlags: flags,
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    };
+    unsafe {
+        SendInput(
+            1,
+            std::ptr::addr_of!(input),
+            std::mem::size_of::<INPUT>() as i32,
+        );
+    }
+}
+
+/// Emit a single `NativeKey` as a chord: hold modifiers, press base,
+/// release base, release modifiers in reverse order.
+fn emit_key_event(native_key: &NativeKey) {
+    let mut pressed_modifiers: Vec<VIRTUAL_KEY> = Vec::new();
+
+    // Press modifiers in ascending bit order.
+    for bit in 0..8 {
+        if (native_key.modifiers >> bit) & 1 == 1 {
+            if let Some(vk) = modifier_bit_to_vk(bit) {
+                simulate_key_event(vk, false);
+                pressed_modifiers.push(vk);
+                thread::sleep(Duration::from_millis(1));
+            }
+        }
+    }
+
+    // Press base key.
+    simulate_key_event(native_key.base as VIRTUAL_KEY, false);
+    thread::sleep(Duration::from_millis(1));
+
+    // Release base key.
+    simulate_key_event(native_key.base as VIRTUAL_KEY, true);
+    thread::sleep(Duration::from_millis(1));
+
+    // Release modifiers in reverse order.
+    for vk in pressed_modifiers.into_iter().rev() {
+        simulate_key_event(vk, true);
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Low-level keyboard hook
 // ---------------------------------------------------------------------------
 
@@ -355,6 +501,22 @@ fn hook_handle() -> HHOOK {
     *HOOK_HANDLE
         .get()
         .expect("hook handle not initialised — call start_mapping first")
+}
+
+/// Map a VK code to its modifier bit position.  Returns `None` for
+/// non-modifier keys.
+fn vk_to_modifier_bit(vk: VIRTUAL_KEY) -> Option<u8> {
+    match vk {
+        0xA2 => Some(0), // VK_LCONTROL
+        0xA3 => Some(1), // VK_RCONTROL
+        0xA0 => Some(2), // VK_LSHIFT
+        0xA1 => Some(3), // VK_RSHIFT
+        0xA4 => Some(4), // VK_LMENU
+        0xA5 => Some(5), // VK_RMENU
+        0x5B => Some(6), // VK_LWIN
+        0x5C => Some(7), // VK_RWIN
+        _ => None,
+    }
 }
 
 pub(crate) fn start_mapping(
@@ -390,32 +552,6 @@ pub(crate) fn start_mapping(
     Ok(())
 }
 
-/// Probe `GetKeyState` for each left-side modifier VK and build a group
-/// bitmask.  Using the left-side constants is sufficient because both left
-/// and right keys set the same group bits, matching either side.
-fn extract_modifier_bits() -> u8 {
-    let mut bits: u8 = 0;
-
-    // VK_LCONTROL (0xA2)
-    if unsafe { GetKeyState(0xA2) < 0 } {
-        bits |= (1 << 0) | (1 << 1);
-    }
-    // VK_LSHIFT (0xA0)
-    if unsafe { GetKeyState(0xA0) < 0 } {
-        bits |= (1 << 2) | (1 << 3);
-    }
-    // VK_LMENU (0xA4)
-    if unsafe { GetKeyState(0xA4) < 0 } {
-        bits |= (1 << 4) | (1 << 5);
-    }
-    // VK_LWIN (0x5B)
-    if unsafe { GetKeyState(0x5B) < 0 } {
-        bits |= (1 << 6) | (1 << 7);
-    }
-
-    bits
-}
-
 extern "system" fn low_level_keyboard_proc(
     code: i32,
     w_param: WPARAM,
@@ -443,82 +579,32 @@ extern "system" fn low_level_keyboard_proc(
     let is_key_up =
         w_param as u32 == WM_KEYUP || w_param as u32 == WM_SYSKEYUP;
 
-    // Extract currently pressed modifier groups.
+    // Modifier-only events are passed through — don't remap them.
+    if vk_to_modifier_bit(vk_code).is_some() {
+        return unsafe {
+            CallNextHookEx(hook_handle(), code, w_param, l_param)
+        };
+    }
+
+    // Extract specific modifier state by polling each key individually.
     let pressed_modifiers = extract_modifier_bits();
 
     let guard = lookup.read();
     let current_app = guard.active_app().to_lowercase();
-    let active_action = guard
+    let active_outputs = guard
         .for_app(&current_app, vk_code, pressed_modifiers)
         .or_else(|| guard.global(vk_code, pressed_modifiers))
-        .cloned();
+        .map(|v| v.to_vec());
     drop(guard);
 
-    if let Some(action) = active_action {
-        match action {
-            NativeAction::RemapTo(target_vk) => {
-                simulate_key_event(target_vk, is_key_up);
-            }
-            NativeAction::Shortcut(target_vks) => {
-                if is_key_down {
-                    for vk in &target_vks {
-                        simulate_key_event(*vk, false);
-                    }
-                } else if is_key_up {
-                    for vk in target_vks.iter().rev() {
-                        simulate_key_event(*vk, true);
-                    }
-                }
+    if let Some(outputs) = active_outputs {
+        if is_key_down {
+            for native_key in &outputs {
+                emit_key_event(native_key);
             }
         }
         return 1; // Swallow the original key
     }
 
     unsafe { CallNextHookEx(hook_handle(), code, w_param, l_param) }
-}
-
-/// Return true when the given virtual-key code corresponds to an extended
-/// hardware key (scan-code prefixed with 0xE0).  These include the right-side
-/// modifiers, navigation cluster (arrows / Home / End / Ins / Del / PgUp /
-/// PgDown), and the numpad Enter.
-fn is_extended_key(vk: VIRTUAL_KEY) -> bool {
-    matches!(
-        vk,
-        // Right-side modifiers
-        0xA3 | 0xA5 // VK_RCONTROL, VK_RMENU
-            // Navigation cluster
-            | 0x21 | 0x22 | 0x23 | 0x25
-            ..=0x28 // PgUp, PgDn, Home/End, arrows
-            | 0x2D | 0x2E // VK_INSERT, VK_DELETE
-    )
-}
-
-/// Inject a synthetic key event via `SendInput` (modern replacement for
-/// the deprecated `keybd_event`).  `vk` is `VIRTUAL_KEY` (u16) — matching
-/// both `NativeKey` and the API natively.
-fn simulate_key_event(vk: VIRTUAL_KEY, is_key_up: bool) {
-    let mut flags = if is_key_up { KEYEVENTF_KEYUP } else { 0 };
-    if is_extended_key(vk) {
-        flags |= KEYEVENTF_EXTENDEDKEY;
-    }
-
-    let mut input = INPUT {
-        r#type: INPUT_KEYBOARD,
-        Anonymous: INPUT_0 {
-            ki: KEYBDINPUT {
-                wVk: vk,
-                wScan: 0,
-                dwFlags: flags,
-                time: 0,
-                dwExtraInfo: 0,
-            },
-        },
-    };
-    unsafe {
-        SendInput(
-            1,
-            std::ptr::addr_of!(input),
-            std::mem::size_of::<INPUT>() as i32,
-        );
-    }
 }

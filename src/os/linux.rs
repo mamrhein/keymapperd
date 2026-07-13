@@ -17,7 +17,7 @@ use evdev::{Device, EventType, Key as EvdevKey};
 use parking_lot::RwLock;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::{key_names, mapping_cache::NativeAction, state::Lookup};
+use crate::{key_names, mapping_cache::NativeKey, state::Lookup};
 
 // ---------------------------------------------------------------------------
 // Platform-specific Key enum — discriminants ARE the evdev KEY_* codes
@@ -115,18 +115,29 @@ impl Key {
         self as u16
     }
 
-    /// Return the modifier-bitmask contribution of this key.
-    pub const fn as_modifier_bits(self) -> u8 {
+    /// Return the modifier bit **position** (0–7) for this key.
+    pub const fn as_modifier_bit(self) -> Option<u8> {
         match self {
-            Self::LeftControl => 1 << 0,
-            Self::RightControl => 1 << 1,
-            Self::LeftShift => 1 << 2,
-            Self::RightShift => 1 << 3,
-            Self::LeftAlt => 1 << 4,
-            Self::RightAlt => 1 << 5,
-            Self::LeftCommand => 1 << 6,
-            Self::RightCommand => 1 << 7,
-            _ => 0,
+            Self::LeftControl => Some(0),
+            Self::RightControl => Some(1),
+            Self::LeftShift => Some(2),
+            Self::RightShift => Some(3),
+            Self::LeftAlt => Some(4),
+            Self::RightAlt => Some(5),
+            Self::LeftCommand => Some(6),
+            Self::RightCommand => Some(7),
+            _ => None,
+        }
+    }
+
+    /// Return the possible modifier bit positions for this key.
+    pub fn as_modifier_positions(self) -> Option<Vec<u8>> {
+        match self {
+            Self::LeftControl | Self::RightControl => Some(vec![0, 1]),
+            Self::LeftShift | Self::RightShift => Some(vec![2, 3]),
+            Self::LeftAlt | Self::RightAlt => Some(vec![4, 5]),
+            Self::LeftCommand | Self::RightCommand => Some(vec![6, 7]),
+            _ => None,
         }
     }
 
@@ -310,6 +321,81 @@ impl<'de> Deserialize<'de> for Key {
 }
 
 // ---------------------------------------------------------------------------
+// Modifier handling — specific key bits (evdev can distinguish left/right)
+// ---------------------------------------------------------------------------
+
+/// Map a raw evdev keycode to its modifier bit position.  Returns `None`
+/// for non-modifier keys.
+fn keycode_to_modifier_bit(code: u16) -> Option<u8> {
+    match code {
+        29 => Some(0),   // KEY_LEFTCTRL
+        97 => Some(1),   // KEY_RIGHTCTRL
+        42 => Some(2),   // KEY_LEFTSHIFT
+        54 => Some(3),   // KEY_RIGHTSHIFT
+        56 => Some(4),   // KEY_LEFTALT
+        100 => Some(5),  // KEY_RIGHTALT
+        125 => Some(6),  // KEY_LEFTMETA
+        126 => Some(7),  // KEY_RIGHTMETA
+        _ => None,
+    }
+}
+
+/// Map a modifier bit position back to the native evdev code for emission.
+fn modifier_bit_to_code(bit: u8) -> Option<u16> {
+    match bit {
+        0 => Some(29),   // KEY_LEFTCTRL
+        1 => Some(97),   // KEY_RIGHTCTRL
+        2 => Some(42),   // KEY_LEFTSHIFT
+        3 => Some(54),   // KEY_RIGHTSHIFT
+        4 => Some(56),   // KEY_LEFTALT
+        5 => Some(100),  // KEY_RIGHTALT
+        6 => Some(125),  // KEY_LEFTMETA
+        7 => Some(126),  // KEY_RIGHTMETA
+        _ => None,
+    }
+}
+
+/// Emit a single `NativeKey` as a chord: hold modifiers, press base,
+/// release base, release modifiers in reverse order.
+fn emit_key_event(
+    device: &mut uinput::VirtualDevice,
+    native_key: &NativeKey,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut pressed_modifiers: Vec<u16> = Vec::new();
+
+    // Press modifiers in ascending bit order.
+    for bit in 0..8 {
+        if (native_key.modifiers >> bit) & 1 == 1 {
+            if let Some(code) = modifier_bit_to_code(bit) {
+                device.press(&EvdevKey::new(code))?;
+                pressed_modifiers.push(code);
+                device.synchronize()?;
+                thread::sleep(Duration::from_millis(1));
+            }
+        }
+    }
+
+    // Press base key.
+    device.press(&EvdevKey::new(native_key.base))?;
+    device.synchronize()?;
+    thread::sleep(Duration::from_millis(1));
+
+    // Release base key.
+    device.release(&EvdevKey::new(native_key.base))?;
+    device.synchronize()?;
+    thread::sleep(Duration::from_millis(1));
+
+    // Release modifiers in reverse order.
+    for code in pressed_modifiers.into_iter().rev() {
+        device.release(&EvdevKey::new(code))?;
+        device.synchronize()?;
+        thread::sleep(Duration::from_millis(1));
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // evdev event loop
 // ---------------------------------------------------------------------------
 
@@ -320,101 +406,52 @@ extern "C" fn signal_handler(_sig: libc::c_int) {
 
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 
-/// Scan `/dev/input/event*` for the first real keyboard device.
+/// Discover the first suitable keyboard device on Linux.
 ///
-/// Filters out virtual (uinput) devices and devices that lack keyboard
-/// capabilities.
+/// Scans `/dev/input/event*` devices and returns the first one that
+/// supports keyboard events (EV_KEY).  If no suitable device is found,
+/// returns an error.
 fn find_keyboard_device() -> Result<Device, Box<dyn std::error::Error>> {
-    let entries = std::fs::read_dir("/dev/input")?;
-    let mut candidates: Vec<(std::path::PathBuf, String, Device)> = Vec::new();
+    use std::fs;
+    use std::path::Path;
 
-    for entry in entries.filter_map(|e| e.ok()) {
-        let name_str = entry.file_name().to_string_lossy().to_string();
-        if !name_str.starts_with("event") {
-            continue;
-        }
-
-        let path = entry.path();
-        let Ok(device) = Device::open(&path) else {
-            continue;
-        };
-
-        // Must support keyboard events.
-        let supported = device.supported_events();
-        if !supported.get(EventType::KEY).is_empty() {
-            let dev_name = device.name().to_string();
-            // Skip virtual/uinput devices — we don't want to intercept
-            // our own synthetic events.
-            let lower = dev_name.to_lowercase();
-            if !lower.contains("virtual") && !lower.contains("uinput") {
-                candidates.push((path, dev_name, device));
-            }
-        }
-    }
-
-    if candidates.is_empty() {
-        return Err("No keyboard device found in /dev/input/. \
-             Ensure you have read permission on /dev/input/event*"
+    let input_path = Path::new("/dev/input");
+    if !input_path.exists() {
+        return Err("No /dev/input directory found. \
+                    Do you have permission to access input devices?"
             .into());
     }
 
-    // Prefer devices whose name contains common keyboard indicators.
-    let prefer_keyword = |name: &str| {
-        let l = name.to_lowercase();
-        l.contains("keyboard")
-            || l.contains("kbd")
-            || l.contains("at set")
-            || l.contains("apple")
-    };
+    let mut devices: Vec<Device> = Vec::new();
 
-    if let Some((path, dev_name, device)) = candidates
-        .iter()
-        .find(|(_, name, _)| prefer_keyword(name))
-        .map(|(p, n, d)| (p.clone(), n.clone(), d.clone()))
-    {
-        println!(
-            "Linux: using keyboard device '{}' ({})",
-            dev_name,
-            path.display()
-        );
-        Ok(device)
-    } else {
-        // No named keyboard — take the first candidate.
-        let (path, dev_name, device) = &candidates[0];
-        println!(
-            "Linux: no named keyboard found, falling back to '{}' ({})",
-            dev_name,
-            path.display()
-        );
-        if candidates.len() > 1 {
-            println!(
-                "Linux: other candidates: {}",
-                candidates[1..]
-                    .iter()
-                    .map(|(p, n, _)| format!("{} ({})", n, p.display()))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
+    for entry in fs::read_dir(input_path)? {
+        let entry = entry?;
+        let path = entry.path();
+
+        if !path.to_string_lossy().starts_with("/dev/input/event") {
+            continue;
         }
-        Ok(device.clone())
-    }
-}
 
-/// Map a raw evdev keycode to its modifier group bitmask.
-///
-/// Returns `0` if the code does not correspond to a recognised modifier key.
-fn modifier_bits_from_code(code: u16) -> u8 {
-    match code {
-        // Control group: bits 0 | 1
-        29 | 97 => (1 << 0) | (1 << 1),
-        // Shift group: bits 2 | 3
-        42 | 54 => (1 << 2) | (1 << 3),
-        // Alt group: bits 4 | 5
-        56 | 100 => (1 << 4) | (1 << 5),
-        // Meta/Command group: bits 6 | 7
-        125 | 126 => (1 << 6) | (1 << 7),
-        _ => 0,
+        if let Ok(device) = Device::open(&path) {
+            devices.push(device);
+        }
     }
+
+    if devices.is_empty() {
+        return Err("No keyboard device found. \
+                    Try adding your user to the 'input' group: \
+                    sudo usermod -aG input $USER"
+            .into());
+    }
+
+    // Return the first device that supports EV_KEY.
+    for device in devices {
+        if device.supported_events().contains(EventType::KEY) {
+            return Ok(device);
+        }
+    }
+
+    Err("No keyboard device found that supports EV_KEY".into())
 }
 
 pub(crate) fn start_mapping(
@@ -438,8 +475,8 @@ pub(crate) fn start_mapping(
         libc::signal(libc::SIGTERM, handler_ptr);
     }
 
-    // Poll loop with shutdown check.
     // Track modifier state so chord rules can match against active modifiers.
+    // Uses specific bits (not groups) — evdev can distinguish left/right.
     let mut active_modifiers: u8 = 0;
 
     while !SHUTDOWN_REQUESTED.load(Ordering::Acquire) {
@@ -450,80 +487,53 @@ pub(crate) fn start_mapping(
                         let code = event.code();
                         let value = event.value(); // 1 = Down, 0 = Up, 2 = Repeat
 
-                        let key_mod_bits = modifier_bits_from_code(code);
+                        let maybe_mod_bit = keycode_to_modifier_bit(code);
 
                         // Update modifier tracking.
-                        if value == 1 {
-                            // Key down: add modifier bits before lookup so that
-                            // a chord rule can match the keypress itself.
-                            active_modifiers |= key_mod_bits;
-                        } else if value == 0 {
-                            // Key up: lookup with current state, then remove
-                            // modifier bits after.
+                        if let Some(bit) = maybe_mod_bit {
+                            if value == 1 {
+                                active_modifiers |= 1 << bit;
+                            } else if value == 0 {
+                                active_modifiers &= !(1 << bit);
+                            }
                         }
 
                         let guard = lookup.read();
                         let current_app = guard.active_app().to_lowercase();
-                        let active_action = guard
+                        let active_outputs = guard
                             .for_app(&current_app, code, active_modifiers)
                             .or_else(|| guard.global(code, active_modifiers))
-                            .cloned();
+                            .map(|v| v.to_vec());
                         drop(guard);
 
-                        if value == 0 {
-                            // Remove modifier bits after lookup.
-                            active_modifiers &= !key_mod_bits;
+                        if let Some(outputs) = active_outputs {
+                            if value == 1 {
+                                // Key down: emit all output key events as chords.
+                                for native_key in &outputs {
+                                    if let Err(e) =
+                                        emit_key_event(&mut virtual_device, native_key)
+                                    {
+                                        eprintln!("emit error: {}", e);
+                                    }
+                                }
+                            }
+                            // Suppress the original event for remapped keys.
+                            continue;
                         }
 
-                        if let Some(action) = active_action {
-                            match action {
-                                NativeAction::RemapTo(target) => {
-                                    let key = EvdevKey::new(target);
-                                    if value == 1 {
-                                        virtual_device.press(&key)?;
-                                    } else if value == 0 {
-                                        virtual_device.release(&key)?;
-                                    } else {
-                                        // value == 2 (repeat): fire a press+release
-                                        // to preserve autorepeat for the remapped key.
-                                        virtual_device.press(&key)?;
-                                        virtual_device.release(&key)?;
-                                    }
-                                    virtual_device.synchronize()?;
-                                }
-                                NativeAction::Shortcut(targets) => {
-                                    if value == 1 {
-                                        for t in &targets {
-                                            let key = EvdevKey::new(*t);
-                                            virtual_device.press(&key)?;
-                                        }
-                                    } else if value == 0 {
-                                        for t in targets.iter().rev() {
-                                            let key = EvdevKey::new(*t);
-                                            virtual_device.release(&key)?;
-                                        }
-                                    }
-                                    // value == 2 (repeat): suppress silently.
-                                    // Holding the trigger key should not re-fire
-                                    // the macro on every autorepeat tick.
-                                    virtual_device.synchronize()?;
-                                }
-                            }
+                        // Passthrough: forward the event through uinput.
+                        let key = EvdevKey::new(code);
+                        if value == 1 {
+                            virtual_device.press(&key)?;
+                        } else if value == 0 {
+                            virtual_device.release(&key)?;
                         } else {
-                            // Passthrough: forward the event through uinput.
-                            let key = EvdevKey::new(code);
-                            if value == 1 {
-                                virtual_device.press(&key)?;
-                            } else if value == 0 {
-                                virtual_device.release(&key)?;
-                            } else {
-                                // value == 2 (repeat): fire press+release to
-                                // preserve autorepeat through the virtual device.
-                                virtual_device.press(&key)?;
-                                virtual_device.release(&key)?;
-                            }
-                            virtual_device.synchronize()?;
+                            // value == 2 (repeat): fire press+release to
+                            // preserve autorepeat through the virtual device.
+                            virtual_device.press(&key)?;
+                            virtual_device.release(&key)?;
                         }
+                        virtual_device.synchronize()?;
                     }
                 }
             }

@@ -13,20 +13,22 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
+    thread,
+    time::Duration,
 };
 
 use objc2_core_foundation::{
     CFMachPort, CFRetained, CFRunLoop, CFRunLoopSource, kCFRunLoopCommonModes,
 };
 use objc2_core_graphics::{
-    CGEvent, CGEventField, CGEventFlags, CGEventSource, CGEventSourceStateID,
+    CGEvent, CGEventField, CGEventSource, CGEventSourceStateID,
     CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement, CGEventType,
     CGKeyCode,
 };
 use parking_lot::RwLock;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::{key_names, mapping_cache::NativeAction, state::Lookup};
+use crate::{key_names, mapping_cache::NativeKey, state::Lookup};
 
 // ---------------------------------------------------------------------------
 // Platform-specific Key enum — discriminants ARE the CGKeyCode values
@@ -48,7 +50,7 @@ pub enum Key {
     RightAlt = 61,     // kVK_RightOption
     LeftCommand = 55,  // kVK_Command
     RightCommand = 54, // kVK_RightCommand
-    CapsLock = 57,     // kVK_CapsLock
+    CapsLock = 27,     // kVK_CapsLock
     // --- Editor / misc ---
     Tab = 48,       // kVK_Tab
     Space = 49,     // kVK_Space
@@ -78,7 +80,7 @@ pub enum Key {
     F10 = 109, // kVK_F10
     F11 = 103, // kVK_F11
     F12 = 111, // kVK_F12
-    // --- Letters (US QWERTY) ---
+    // --- Letters ---
     A = 0,  // kVK_ANSI_A
     B = 11, // kVK_ANSI_B
     C = 8,  // kVK_ANSI_C
@@ -125,33 +127,35 @@ impl Key {
         self as u16
     }
 
-    /// Return the modifier-bitmask contribution of this key.
+    /// Return the modifier bit **position** (0–7) for this key.
     ///
-    /// Modifier keys return a bitmask with the corresponding bit set.
-    /// Non-modifier keys return `0`.  When a rule specifies a group
-    /// modifier (e.g. "ctrl" meaning either side), the bit is set for
-    /// whichever physical key matches — handled by the alias layer so
-    /// that "leftctrl" and "rightctrl" each resolve to their own bit.
-    #[allow(unused)]
-    pub const fn as_modifier_bits(self) -> u8 {
+    /// Modifier keys return `Some(position)` where position is the index in
+    /// the 8-bit modifier mask.  Non-modifier keys return `None`.
+    pub const fn as_modifier_bit(self) -> Option<u8> {
         match self {
-            // bit 0: left control
-            Self::LeftControl => 1 << 0,
-            // bit 1: right control
-            Self::RightControl => 1 << 1,
-            // bit 2: left shift
-            Self::LeftShift => 1 << 2,
-            // bit 3: right shift
-            Self::RightShift => 1 << 3,
-            // bit 4: left alt (option)
-            Self::LeftAlt => 1 << 4,
-            // bit 5: right alt (option)
-            Self::RightAlt => 1 << 5,
-            // bit 6: left command
-            Self::LeftCommand => 1 << 6,
-            // bit 7: right command
-            Self::RightCommand => 1 << 7,
-            _ => 0, // non-modifier keys contribute nothing
+            Self::LeftControl => Some(0),
+            Self::RightControl => Some(1),
+            Self::LeftShift => Some(2),
+            Self::RightShift => Some(3),
+            Self::LeftAlt => Some(4),
+            Self::RightAlt => Some(5),
+            Self::LeftCommand => Some(6),
+            Self::RightCommand => Some(7),
+            _ => None,
+        }
+    }
+
+    /// Return the possible modifier bit positions for this key.
+    ///
+    /// All modifier keys return both left and right positions, enabling
+    /// "either side" matching.  Non-modifier keys return `None`.
+    pub fn as_modifier_positions(self) -> Option<Vec<u8>> {
+        match self {
+            Self::LeftControl | Self::RightControl => Some(vec![0, 1]),
+            Self::LeftShift | Self::RightShift => Some(vec![2, 3]),
+            Self::LeftAlt | Self::RightAlt => Some(vec![4, 5]),
+            Self::LeftCommand | Self::RightCommand => Some(vec![6, 7]),
+            _ => None,
         }
     }
 
@@ -338,25 +342,88 @@ impl<'de> Deserialize<'de> for Key {
 }
 
 // ---------------------------------------------------------------------------
-// Modifier extraction
+// Modifier extraction — track specific key state for exact matching
 // ---------------------------------------------------------------------------
 
-/// Map CGEventFlags to our 8-bit modifier layout.
-fn extract_modifier_bits(flags: CGEventFlags) -> u8 {
-    let mut bits: u8 = 0;
-    if flags.contains(CGEventFlags::MaskControl) {
-        bits |= (1 << 0) | (1 << 1); // control group
+/// Map a CGKeyCode to its modifier bit position.  Returns `None` for
+/// non-modifier keys.
+fn keycode_to_modifier_bit(code: CGKeyCode) -> Option<u8> {
+    match code {
+        59 => Some(0), // kVK_Control (left)
+        62 => Some(1), // kVK_RightControl
+        56 => Some(2), // kVK_Shift (left)
+        60 => Some(3), // kVK_RightShift
+        58 => Some(4), // kVK_Option (left)
+        61 => Some(5), // kVK_RightOption
+        55 => Some(6), // kVK_Command (left)
+        54 => Some(7), // kVK_RightCommand
+        _ => None,
     }
-    if flags.contains(CGEventFlags::MaskShift) {
-        bits |= (1 << 2) | (1 << 3); // shift group
+}
+
+/// Map a modifier bit position back to the native CGKeyCode for emission.
+fn modifier_bit_to_code(bit: u8) -> Option<CGKeyCode> {
+    match bit {
+        0 => Some(59), // kVK_Control (left)
+        1 => Some(62), // kVK_RightControl
+        2 => Some(56), // kVK_Shift (left)
+        3 => Some(60), // kVK_RightShift
+        4 => Some(58), // kVK_Option (left)
+        5 => Some(61), // kVK_RightOption
+        6 => Some(55), // kVK_Command (left)
+        7 => Some(54), // kVK_RightCommand
+        _ => None,
     }
-    if flags.contains(CGEventFlags::MaskAlternate) {
-        bits |= (1 << 4) | (1 << 5); // alt/option group
+}
+
+/// Emit a single `NativeKey` as a chord: hold modifiers, press base,
+/// release base, release modifiers in reverse order.
+fn emit_key_event(source: &CFRetained<CGEventSource>, native_key: &NativeKey) {
+    let mut pressed_modifiers: Vec<CGKeyCode> = Vec::new();
+
+    // Press modifiers in ascending bit order.
+    for bit in 0..8 {
+        if (native_key.modifiers >> bit) & 1 == 1 {
+            if let Some(code) = modifier_bit_to_code(bit) {
+                if let Some(e) =
+                    CGEvent::new_keyboard_event(Some(source), code, true)
+                {
+                    CGEvent::post(CGEventTapLocation::HIDEventTap, Some(&e));
+                }
+                pressed_modifiers.push(code);
+                thread::sleep(Duration::from_millis(1));
+            }
+        }
     }
-    if flags.contains(CGEventFlags::MaskCommand) {
-        bits |= (1 << 6) | (1 << 7); // command group
+
+    // Press base key.
+    if let Some(e) = CGEvent::new_keyboard_event(
+        Some(source),
+        native_key.base as CGKeyCode,
+        true,
+    ) {
+        CGEvent::post(CGEventTapLocation::HIDEventTap, Some(&e));
     }
-    bits
+    thread::sleep(Duration::from_millis(1));
+
+    // Release base key.
+    if let Some(e) = CGEvent::new_keyboard_event(
+        Some(source),
+        native_key.base as CGKeyCode,
+        false,
+    ) {
+        CGEvent::post(CGEventTapLocation::HIDEventTap, Some(&e));
+    }
+    thread::sleep(Duration::from_millis(1));
+
+    // Release modifiers in reverse order.
+    for code in pressed_modifiers.into_iter().rev() {
+        if let Some(e) = CGEvent::new_keyboard_event(Some(source), code, false)
+        {
+            CGEvent::post(CGEventTapLocation::HIDEventTap, Some(&e));
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -370,6 +437,10 @@ struct TapContext {
     /// Pre-created event source reused for every synthetic keyboard event.
     /// Avoids a per-keystroke allocation inside the hot callback path.
     source: CFRetained<CGEventSource>,
+    /// Bitmask tracking which specific modifier keys are physically pressed.
+    /// Updated on every modifier key down/up event.  This enables exact
+    /// matching against compiled rules, which use specific bits (not groups).
+    modifier_state: u8,
 }
 
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -417,8 +488,11 @@ pub(crate) fn start_mapping(
     // Allocate the context on the heap and leak the `Box` to get a stable
     // pointer for the FFI callback.  The `EventTapHandle` owns this pointer
     // and reclaims it in `Drop`.
-    let context_ptr =
-        Box::into_raw(Box::new(TapContext { lookup, source })) as *mut _;
+    let context_ptr = Box::into_raw(Box::new(TapContext {
+        lookup,
+        source,
+        modifier_state: 0,
+    })) as *mut _;
 
     let tap = unsafe {
         CGEvent::tap_create(
@@ -508,7 +582,7 @@ unsafe extern "C-unwind" fn macos_keyboard_callback_ffi(
         return event.as_ptr();
     }
 
-    let context = unsafe { &*(user_info as *const TapContext) };
+    let context = unsafe { &mut *(user_info as *mut TapContext) };
 
     // CGKeyCode is u16 — matches the native key code directly.
     let native_key: CGKeyCode = unsafe {
@@ -520,65 +594,41 @@ unsafe extern "C-unwind" fn macos_keyboard_callback_ffi(
 
     let is_down = _type == CGEventType::KeyDown;
 
-    // Extract currently pressed modifier groups.
-    let pressed_modifiers =
-        extract_modifier_bits(unsafe { CGEvent::flags(Some(event.as_ref())) });
+    // Track specific modifier key state so we can do exact matching against
+    // compiled rules (which use specific bits, not group flags).
+    if let Some(bit) = keycode_to_modifier_bit(native_key) {
+        if is_down {
+            context.modifier_state |= 1 << bit;
+        } else {
+            context.modifier_state &= !(1 << bit);
+        }
+        // Modifier-only events are passed through — don't remap them.
+        return event.as_ptr();
+    }
 
-    // Resolve the remapping through the trait interface.  Clone the action
-    // out so we can drop the read lock before expensive CGEvent operations.
+    // Use the tracked modifier state for lookup — this reflects exactly which
+    // physical modifier keys are pressed.
+    let pressed_modifiers = context.modifier_state;
+
+    // Resolve the remapping through the trait interface.  Clone the outputs
+    // so we can drop the read lock before expensive CGEvent operations.
     let guard = context.lookup.read();
     let current_app = guard.active_app().to_lowercase();
-    let active_action = guard
+    let active_outputs = guard
         .for_app(&current_app, native_key, pressed_modifiers)
         .or_else(|| guard.global(native_key, pressed_modifiers))
-        .cloned();
+        .map(|v| v.to_vec());
     drop(guard);
 
-    if let Some(action) = active_action {
-        match action {
-            NativeAction::RemapTo(target_code) => {
-                // Modify the existing event's keycode in place.
-                unsafe {
-                    CGEvent::set_integer_value_field(
-                        Some(event.as_ref()),
-                        CGEventField::KeyboardEventKeycode,
-                        target_code as i64,
-                    );
-                }
-                return event.as_ptr();
-            }
-            NativeAction::Shortcut(target_codes) => {
-                if is_down {
-                    for code in &target_codes {
-                        if let Some(e) = CGEvent::new_keyboard_event(
-                            Some(&context.source),
-                            *code as CGKeyCode,
-                            true,
-                        ) {
-                            CGEvent::post(
-                                CGEventTapLocation::HIDEventTap,
-                                Some(&e),
-                            );
-                        }
-                    }
-                } else {
-                    for code in target_codes.iter().rev() {
-                        if let Some(e) = CGEvent::new_keyboard_event(
-                            Some(&context.source),
-                            *code as CGKeyCode,
-                            false,
-                        ) {
-                            CGEvent::post(
-                                CGEventTapLocation::HIDEventTap,
-                                Some(&e),
-                            );
-                        }
-                    }
-                }
-                // Suppress the original event for shortcuts.
-                return std::ptr::null_mut();
+    if let Some(outputs) = active_outputs {
+        if is_down {
+            // Emit all output key events as chords.
+            for native_key in &outputs {
+                emit_key_event(&context.source, native_key);
             }
         }
+        // Suppress the original event.
+        return std::ptr::null_mut();
     }
 
     event.as_ptr()

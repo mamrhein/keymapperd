@@ -1,6 +1,6 @@
 # keymapperd
 
-Cross-platform key-remapping daemon for macOS, Linux, and Windows. Intercepts keyboard events and remaps them based on a YAML configuration file, with per-application scoping, chord (modifier + key) triggers, and hot-reload.
+Cross-platform key-remapping daemon for macOS, Linux, and Windows. Intercepts keyboard events and remaps them based on a YAML configuration file, with per-application scoping, chord (modifier + key) triggers and outputs, and hot-reload.
 
 ## Installation
 
@@ -29,8 +29,8 @@ The daemon exits if no configuration file is found.
 ```yaml
 # Global: swap CapsLock and LeftControl
 - mappings:
-    capslock: left_control
-    left_control: capslock
+    capslock: leftcontrol
+    leftcontrol: capslock
 
 # Vim-style navigation in iTerm2
 - name: "iterm nav"
@@ -41,11 +41,15 @@ The daemon exits if no configuration file is found.
     ctrl+k: up
     ctrl+l: right
 
-# Global chord shortcuts
+# Global chord shortcuts — outputs are real chords, not sequential presses
 - name: "workspace switch"
   mappings:
-    ctrl+shift+left: [cmd, left]
-    ctrl+shift+right: [cmd, right]
+    ctrl+shift+left: cmd+left
+    ctrl+shift+right: cmd+right
+
+# Modifier remapping — emit OptionLeft+L when pressing OptionRight
+- mappings:
+    optionright: optionleft+l
 ```
 
 ### Structure
@@ -66,8 +70,10 @@ Each mapping is a `trigger: output` pair inside a `mappings:` block.
 
 | Output | Description | Example |
 |--------|-------------|---------|
-| Single chord string | Replace the trigger with one key or chord | `capslock: left_control` |
-| List of chord strings | Emit a sequence of keys (macro) | `f1: [cmd, t]` |
+| Single key or chord string | Replace the trigger with one key event (modifiers held while pressing base) | `capslock: leftcontrol` |
+| List of chord strings | Emit a sequence of key events (macro) | `f1: [cmd, t]` |
+
+Every output is a **chord**: modifier keys are held while the base key is pressed, then released in reverse. For example, `cmd+left` is emitted as "press cmd → press left → release left → release cmd", ensuring the modifier has its intended effect.
 
 ### Triggers
 
@@ -79,7 +85,7 @@ Triggers use compact `+`-separated strings. The last token is the base key; all 
 | Modifier + key | `ctrl+h` | Ctrl held while pressing H |
 | Multiple modifiers | `cmd+shift+t` | Cmd + Shift held while pressing T |
 
-**Modifier matching:** when you write `ctrl`, the rule matches either left or right Control. The same applies to `shift`, `alt`, and `cmd` (which also accepts `super` and `win` as aliases). To be specific about a side, use `leftctrl`, `rightshift`, etc.
+**Modifier matching:** when you write `ctrl`, the rule matches either left or right Control. The same applies to `shift`, `alt`, and `cmd` (which also accepts `super` and `win` as aliases).
 
 **Extra modifiers don't prevent matches.** A rule for `ctrl+h` will also match when `ctrl+shift+h` is pressed. Use more specific triggers if you need to distinguish.
 
@@ -103,6 +109,7 @@ The following aliases resolve to their canonical key name:
 | `rightctrl` | `rightcontrol` |
 | `shift`, `leftshift` | `leftshift` |
 | `alt`, `leftalt` | `leftalt` |
+| `rightalt`, `rightoption`, `optionright` | `rightalt` |
 | `cmd`, `command`, `super` | `leftcommand` |
 | `rightcmd`, `rightcommand` | `rightcommand` |
 | `caps` | `capslock` |

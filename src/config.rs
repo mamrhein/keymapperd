@@ -8,27 +8,29 @@
 // $Revision$
 
 use indexmap::IndexMap;
-use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
+use serde::{Deserialize, Deserializer, Serialize, de};
 
 // Re-export the platform-specific Key type so that downstream modules
 // (mapping_cache, state, hot_reload) import it from this module.
 pub(crate) use crate::os::Key;
 
-/// A key press, optionally combined with modifier keys.
+/// A key event: modifiers held together with a base key press.
 ///
 /// Accepts compact `+`-separated strings in YAML:
-/// - `"CapsLock"` -- single key, no modifiers
-/// - `"ctrl+a"` -- chord: ctrl held while pressing a
-/// - `"cmd+shift+t"` -- chord: cmd+shift held while pressing t
+/// - `"CapsLock"` -- bare key press (no modifiers held)
+/// - `"ctrl+a"` -- ctrl held while pressing a
+/// - `"cmd+shift+t"` -- cmd + shift held while pressing t
+/// - `"optionright+l"` -- right option held while pressing l
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum ChordTrigger {
-    /// Single key with no modifier requirement (e.g. CapsLock alone).
-    Key(Key),
-    /// Base key combined with specific modifiers (e.g. Ctrl+A).
-    Chord { base: Key, modifiers: Vec<Key> },
+pub struct KeyEvent {
+    /// Modifier keys held during the event (empty for bare key presses).
+    pub modifiers: Vec<Key>,
+    /// The base key that is pressed (may itself be a modifier key, e.g.
+    /// CapsLock).
+    pub base: Key,
 }
 
-impl<'de> Deserialize<'de> for ChordTrigger {
+impl<'de> Deserialize<'de> for KeyEvent {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
@@ -38,48 +40,51 @@ impl<'de> Deserialize<'de> for ChordTrigger {
     }
 }
 
-impl Serialize for ChordTrigger {
+impl Serialize for KeyEvent {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        match self {
-            Self::Key(key) => serializer.serialize_str(key.as_str()),
-            Self::Chord { base, modifiers } => {
-                let parts: Vec<String> = modifiers
-                    .iter()
-                    .map(|k| k.as_str().to_string())
-                    .chain(std::iter::once(base.as_str().to_string()))
-                    .collect();
-                serializer.serialize_str(&parts.join("+"))
-            }
-        }
+        let parts: Vec<String> = self
+            .modifiers
+            .iter()
+            .map(|k| k.as_str().to_string())
+            .chain(std::iter::once(self.base.as_str().to_string()))
+            .collect();
+        serializer.serialize_str(&parts.join("+"))
     }
 }
 
-impl ChordTrigger {
-    /// Parse a `+`-separated string into a trigger.
+impl KeyEvent {
+    /// Parse a `+`-separated string into a key event.
+    ///
+    /// The last token is the base key; all preceding tokens are modifiers.
+    /// A single token (e.g. `"capslock"`) is a bare key press with no
+    /// modifiers held, even if the token itself names a modifier key.
     fn parse(s: &str) -> Result<Self, String> {
         let parts: Vec<&str> = s.split('+').collect();
 
         if parts.is_empty() || (parts.len() == 1 && parts[0].trim().is_empty())
         {
-            return Err("empty trigger string".to_string());
+            return Err("empty key event string".to_string());
         }
 
         if parts.len() == 1 {
-            // Single key: "CapsLock", "a", "f1"
-            let key = parse_key(parts[0])?;
-            Ok(Self::Key(key))
+            // Bare key: "CapsLock", "a", "f1" — no modifiers held.
+            let base = parse_key(parts[0])?;
+            Ok(Self {
+                modifiers: Vec::new(),
+                base,
+            })
         } else {
             // Chord: "ctrl+a", "cmd+shift+t"
-            // Last token is the base key; all preceding tokens are modifiers.
+            // Last token is the base key; preceding tokens are modifiers.
             let base = parse_key(parts[parts.len() - 1])?;
             let modifiers: Result<Vec<Key>, _> = parts[..parts.len() - 1]
                 .iter()
                 .map(|p| parse_key(p))
                 .collect();
-            Ok(Self::Chord {
+            Ok(Self {
                 base,
                 modifiers: modifiers?,
             })
@@ -91,7 +96,7 @@ impl ChordTrigger {
 fn parse_key(token: &str) -> Result<Key, String> {
     let trimmed = token.trim();
     if trimmed.is_empty() {
-        return Err("empty key token in trigger".to_string());
+        return Err("empty key token in event string".to_string());
     }
 
     // Strip underscores so that "left_control" and "leftcontrol" match.
@@ -103,17 +108,17 @@ fn parse_key(token: &str) -> Result<Key, String> {
 }
 
 // ---------------------------------------------------------------------------
-// MappingTable -- ordered chord -> chords mapping
+// MappingTable -- ordered key-event -> events mapping
 // ---------------------------------------------------------------------------
 
-/// An ordered collection of mappings from a trigger chord to output chords.
+/// An ordered collection of mappings from a trigger event to output events.
 ///
 /// Stored as an `IndexMap` to guarantee first-match-wins semantics when the
-/// cache is compiled.  Deserialized from a YAML mapping where keys are chord
-/// strings and values are either a single chord string or a list of chord
+/// cache is compiled.  Deserialized from a YAML mapping where keys are event
+/// strings and values are either a single event string or a list of event
 /// strings.
 #[derive(Debug, Clone)]
-pub struct MappingTable(IndexMap<ChordTrigger, Vec<ChordTrigger>>);
+pub struct MappingTable(IndexMap<KeyEvent, Vec<KeyEvent>>);
 
 impl Default for MappingTable {
     fn default() -> Self {
@@ -127,9 +132,7 @@ impl MappingTable {
     }
 
     /// Iterate over (trigger, outputs) pairs in definition order.
-    pub fn iter(
-        &self,
-    ) -> impl Iterator<Item = (&ChordTrigger, &[ChordTrigger])> {
+    pub fn iter(&self) -> impl Iterator<Item = (&KeyEvent, &[KeyEvent])> {
         self.0.iter().map(|(k, v)| (k, v.as_slice()))
     }
 }
@@ -145,7 +148,7 @@ impl<'de> de::Visitor<'de> for MappingTableVisitor {
         &self,
         formatter: &mut std::fmt::Formatter,
     ) -> std::fmt::Result {
-        formatter.write_str("a mapping from chord strings to chord(s)")
+        formatter.write_str("a mapping from event strings to event(s)")
     }
 
     fn visit_map<M>(self, mut access: M) -> Result<Self::Value, M::Error>
@@ -158,28 +161,28 @@ impl<'de> de::Visitor<'de> for MappingTableVisitor {
             access.next_entry::<String, serde_yaml::Value>()?
         {
             let trigger =
-                ChordTrigger::parse(&key_str).map_err(de::Error::custom)?;
+                KeyEvent::parse(&key_str).map_err(de::Error::custom)?;
 
             let outputs = match value {
                 serde_yaml::Value::String(s) => {
-                    let chord =
-                        ChordTrigger::parse(&s).map_err(de::Error::custom)?;
-                    vec![chord]
+                    let event =
+                        KeyEvent::parse(&s).map_err(de::Error::custom)?;
+                    vec![event]
                 }
                 serde_yaml::Value::Sequence(seq) => seq
                     .into_iter()
                     .map(|v| match v {
                         serde_yaml::Value::String(s) => {
-                            ChordTrigger::parse(&s).map_err(de::Error::custom)
+                            KeyEvent::parse(&s).map_err(de::Error::custom)
                         }
                         _ => Err(de::Error::custom(
-                            "expected a chord string in output sequence",
+                            "expected an event string in output sequence",
                         )),
                     })
                     .collect::<Result<Vec<_>, _>>()?,
                 _ => {
                     return Err(de::Error::custom(
-                        "expected a chord string or list of chord strings",
+                        "expected an event string or list of event strings",
                     ));
                 }
             };
@@ -203,23 +206,13 @@ impl<'de> Deserialize<'de> for MappingTable {
 impl Serialize for MappingTable {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
-        S: Serializer,
+        S: serde::Serializer,
     {
         use serde::ser::SerializeMap;
 
         let mut map = serializer.serialize_map(Some(self.0.len()))?;
         for (trigger, outputs) in &self.0 {
-            let key = match trigger {
-                ChordTrigger::Key(k) => k.as_str().to_string(),
-                ChordTrigger::Chord { base, modifiers } => {
-                    let parts: Vec<String> = modifiers
-                        .iter()
-                        .map(|k| k.as_str().to_string())
-                        .chain(std::iter::once(base.as_str().to_string()))
-                        .collect();
-                    parts.join("+")
-                }
-            };
+            let key = trigger_to_string(trigger);
 
             if outputs.len() == 1 {
                 map.serialize_entry(&key, &outputs[0])?;
@@ -229,6 +222,17 @@ impl Serialize for MappingTable {
         }
         map.end()
     }
+}
+
+/// Serialize a KeyEvent back to its `+`-separated string form.
+fn trigger_to_string(event: &KeyEvent) -> String {
+    event
+        .modifiers
+        .iter()
+        .map(|k| k.as_str().to_string())
+        .chain(std::iter::once(event.base.as_str().to_string()))
+        .collect::<Vec<_>>()
+        .join("+")
 }
 
 // ---------------------------------------------------------------------------
@@ -251,7 +255,7 @@ pub struct RuleGroup {
     #[serde(default)]
     pub apps: Vec<String>,
 
-    /// Ordered chord-to-chords mappings.  The first matching rule wins.
+    /// Ordered event-to-events mappings.  The first matching rule wins.
     #[serde(default)]
     pub mappings: MappingTable,
 }
@@ -326,7 +330,7 @@ impl<'de> Deserialize<'de> for AppConfig {
 impl Serialize for AppConfig {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
-        S: Serializer,
+        S: serde::Serializer,
     {
         self.groups.serialize(serializer)
     }
@@ -366,9 +370,11 @@ mod tests {
 
         let mut mappings = group.mappings.iter();
         let (trigger, outputs) = mappings.next().unwrap();
-        assert!(matches!(trigger, ChordTrigger::Key(Key::CapsLock)));
+        assert!(trigger.modifiers.is_empty());
+        assert!(matches!(trigger.base, Key::CapsLock));
         assert_eq!(outputs.len(), 1);
-        assert!(matches!(outputs[0], ChordTrigger::Key(Key::LeftControl)));
+        assert!(outputs[0].modifiers.is_empty());
+        assert!(matches!(outputs[0].base, Key::LeftControl));
         assert!(mappings.next().is_none());
     }
 
@@ -392,27 +398,18 @@ mod tests {
 
         // ctrl+h -> left
         let (trigger, outputs) = mappings.next().unwrap();
-        match trigger {
-            ChordTrigger::Chord { base, modifiers } => {
-                assert!(matches!(base, Key::H));
-                assert_eq!(modifiers.len(), 1);
-                assert!(matches!(modifiers[0], Key::LeftControl));
-            }
-            _ => panic!("expected chord trigger"),
-        }
+        assert_eq!(trigger.modifiers.len(), 1);
+        assert!(matches!(trigger.modifiers[0], Key::LeftControl));
+        assert!(matches!(trigger.base, Key::H));
         assert_eq!(outputs.len(), 1);
-        assert!(matches!(outputs[0], ChordTrigger::Key(Key::LeftArrow)));
+        assert!(outputs[0].modifiers.is_empty());
+        assert!(matches!(outputs[0].base, Key::LeftArrow));
 
         // ctrl+l -> right
         let (trigger, outputs) = mappings.next().unwrap();
-        match trigger {
-            ChordTrigger::Chord { base, modifiers } => {
-                assert!(matches!(base, Key::L));
-                assert_eq!(modifiers.len(), 1);
-            }
-            _ => panic!("expected chord trigger"),
-        }
-        assert!(matches!(outputs[0], ChordTrigger::Key(Key::RightArrow)));
+        assert_eq!(trigger.modifiers.len(), 1);
+        assert!(matches!(trigger.base, Key::L));
+        assert!(matches!(outputs[0].base, Key::RightArrow));
     }
 
     #[test]
@@ -427,6 +424,30 @@ mod tests {
         let mut mappings = group.mappings.iter();
         let (_trigger, outputs) = mappings.next().unwrap();
         assert_eq!(outputs.len(), 2);
+    }
+
+    #[test]
+    fn parse_chord_output() {
+        // A chord output: cmd+l is a single event (hold cmd, press l).
+        let yaml = r#"
+- mappings:
+    optionright: optionleft+l
+"#;
+        let config = AppConfig::load_from_str(yaml).unwrap();
+        let group = &config.groups[0];
+
+        let mut mappings = group.mappings.iter();
+        let (trigger, outputs) = mappings.next().unwrap();
+
+        // Trigger: bare OptionRight
+        assert!(trigger.modifiers.is_empty());
+        assert!(matches!(trigger.base, Key::RightAlt));
+
+        // Output: single event — hold LeftAlt, press L
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].modifiers.len(), 1);
+        assert!(matches!(outputs[0].modifiers[0], Key::LeftAlt));
+        assert!(matches!(outputs[0].base, Key::L));
     }
 
     #[test]
@@ -458,7 +479,6 @@ mod tests {
 
     #[test]
     fn parse_complex_config() {
-        // The real example config structure.
         let yaml = r#"
 - mappings:
     capslock: left_control
@@ -474,8 +494,8 @@ mod tests {
 
 - name: "global shortcuts"
   mappings:
-    ctrl+shift+left: [cmd, left]
-    ctrl+shift+right: [cmd, right]
+    ctrl+shift+left: cmd+left
+    ctrl+shift+right: cmd+right
 "#;
         let config = AppConfig::load_from_str(yaml).unwrap();
         assert_eq!(config.groups.len(), 3);
@@ -488,8 +508,28 @@ mod tests {
         assert_eq!(config.groups[1].apps, vec!["iTerm2".to_string()]);
         assert_eq!(config.groups[1].mappings.iter().count(), 4);
 
-        // Global shortcuts
+        // Global shortcuts — chord outputs
         assert!(config.groups[2].apps.is_empty());
         assert_eq!(config.groups[2].mappings.iter().count(), 2);
+
+        for (_trigger, outputs) in config.groups[2].mappings.iter() {
+            assert_eq!(outputs.len(), 1);
+            assert_eq!(outputs[0].modifiers.len(), 1);
+        }
+    }
+
+    #[test]
+    fn parse_underscored_keys() {
+        // Underscores are stripped, so "left_control" == "leftcontrol".
+        let yaml = r#"
+- mappings:
+    left_control: caps_lock
+"#;
+        let config = AppConfig::load_from_str(yaml).unwrap();
+        let group = &config.groups[0];
+        let mut mappings = group.mappings.iter();
+        let (trigger, outputs) = mappings.next().unwrap();
+        assert!(matches!(trigger.base, Key::LeftControl));
+        assert!(matches!(outputs[0].base, Key::CapsLock));
     }
 }

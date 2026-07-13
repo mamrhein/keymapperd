@@ -23,8 +23,8 @@ pub fn resolve_alias(s: &str) -> Option<&'static str> {
         "rightctrl" | "rightcontrol" => Some("rightcontrol"),
         "shift" | "leftshift" => Some("leftshift"),
         "rightshift" => Some("rightshift"),
-        "alt" | "leftalt" => Some("leftalt"),
-        "rightalt" | "rightoption" => Some("rightalt"),
+        "alt" | "leftalt" | "optionleft" => Some("leftalt"),
+        "rightalt" | "rightoption" | "optionright" => Some("rightalt"),
         "cmd" | "command" | "leftcmd" | "leftcommand" | "super"
         | "leftsuper" => Some("leftcommand"),
         "rightcmd" | "rightcommand" | "rightsuper" => Some("rightcommand"),
