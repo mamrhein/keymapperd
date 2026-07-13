@@ -12,6 +12,13 @@ use std::path::{Path, PathBuf};
 const APP_NAME: &str = "keymapperd";
 const CONFIG_FILE: &str = "config.yaml";
 
+/// Returns the canonical path where the configuration file should reside.
+/// This is the platform-specific application config directory plus the
+/// default file name.  The directory may not exist yet.
+pub fn default_config_path() -> Option<PathBuf> {
+    platform_config_dir().map(|d| d.join(CONFIG_FILE))
+}
+
 /// Search standard platform directories for the user configuration file.
 ///
 /// Search order:

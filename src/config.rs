@@ -62,7 +62,7 @@ impl KeyEvent {
     /// The last token is the base key; all preceding tokens are modifiers.
     /// A single token (e.g. `"CapsLock"`) is a bare key press with no
     /// modifiers held, even if the token itself names a modifier key.
-    fn parse(s: &str) -> Result<Self, String> {
+    pub fn parse(s: &str) -> Result<Self, String> {
         let parts: Vec<&str> = s.split('+').collect();
 
         if parts.is_empty() || (parts.len() == 1 && parts[0].trim().is_empty())
@@ -133,6 +133,11 @@ impl MappingTable {
     /// Iterate over (trigger, outputs) pairs in definition order.
     pub fn iter(&self) -> impl Iterator<Item = (&KeyEvent, &[KeyEvent])> {
         self.0.iter().map(|(k, v)| (k, v.as_slice()))
+    }
+
+    /// Insert a new mapping entry.
+    pub fn insert(&mut self, trigger: KeyEvent, outputs: Vec<KeyEvent>) {
+        self.0.insert(trigger, outputs);
     }
 }
 
@@ -246,16 +251,16 @@ fn trigger_to_string(event: &KeyEvent) -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuleGroup {
     /// Human-readable name for documentation/debugging.  Not required.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 
     /// Target applications (process names or bundle IDs).  An empty list
     /// means the group applies globally.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub apps: Vec<String>,
 
     /// Ordered event-to-events mappings.  The first matching rule wins.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "MappingTable::is_empty")]
     pub mappings: MappingTable,
 }
 

@@ -10,6 +10,7 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
+use keymapperd::config::{AppConfig, KeyEvent, RuleGroup};
 
 /// CLI utility for managing the keymapperd configuration.
 #[derive(Parser)]
@@ -37,6 +38,26 @@ enum ConfigCommands {
 
     /// Validate and diagnose the configuration.
     Check,
+
+    /// Create an empty configuration file at the default location.
+    Create,
+
+    /// Add a key-mapping rule to the configuration.
+    Add {
+        /// Trigger key event (e.g. "CapsLock", "Ctrl+H").
+        trigger: String,
+
+        /// Output key event (e.g. "LeftControl", "Cmd+Shift+T").
+        output: String,
+
+        /// Group name. Creates the group if it doesn't exist.
+        #[arg(short, long, default_value = "default")]
+        group: String,
+
+        /// Comma-separated app names to scope this rule.
+        #[arg(short, long)]
+        apps: Option<Vec<String>>,
+    },
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -46,6 +67,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Config { command } => match command {
             ConfigCommands::List => cmd_config_list()?,
             ConfigCommands::Check => cmd_config_check()?,
+            ConfigCommands::Create => cmd_config_create()?,
+            ConfigCommands::Add {
+                trigger,
+                output,
+                group,
+                apps,
+            } => cmd_config_add(&trigger, &output, &group, apps)?,
         },
     }
 
@@ -86,6 +114,108 @@ fn cmd_config_check() -> Result<(), Box<dyn std::error::Error>> {
             println!("  {} {}", i + 1, msg);
         }
     }
+
+    Ok(())
+}
+
+fn cmd_config_create() -> Result<(), Box<dyn std::error::Error>> {
+    let path = keymapperd::config_path::default_config_path()
+        .ok_or("could not determine default config directory")?;
+
+    // Check if the file already exists.
+    if path.is_file() {
+        return Err(format!(
+            "configuration file already exists: {}",
+            path.display()
+        )
+        .into());
+    }
+
+    // Create parent directory if needed.
+    if let Some(parent) = path.parent() {
+        fs_err::create_dir_all(parent)?;
+    }
+
+    // Write an empty config.
+    let config = AppConfig::default();
+    let yaml = serde_yaml::to_string(&config)?;
+    fs_err::write(&path, &yaml)?;
+
+    println!("Created empty configuration at {}", path.display());
+
+    Ok(())
+}
+
+fn cmd_config_add(
+    trigger_str: &str,
+    output_str: &str,
+    group_name: &str,
+    apps: Option<Vec<String>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Parse the trigger and output.
+    let trigger = KeyEvent::parse(trigger_str)
+        .map_err(|e| format!("invalid trigger '{}': {e}", trigger_str))?;
+    let output = KeyEvent::parse(output_str)
+        .map_err(|e| format!("invalid output '{}': {e}", output_str))?;
+
+    // Find or create the config file.  Prefer CWD for development
+    // convenience, falling back to the platform default directory.
+    let path = keymapperd::config_path::find_config_path()
+        .or_else(|| {
+            // No config exists yet — create one in CWD.
+            let cwd_path = std::path::PathBuf::from("config.yaml");
+            Some(cwd_path)
+        })
+        .or_else(keymapperd::config_path::default_config_path);
+
+    let path = path.ok_or("could not determine config file location")?;
+
+    // Load existing config or start fresh.
+    let mut config = if path.is_file() {
+        let contents = fs_err::read_to_string(&path)?;
+        AppConfig::load_from_str(&contents).map_err(|err| {
+            format!("failed to parse {}: {err}", path.display())
+        })?
+    } else {
+        AppConfig::default()
+    };
+
+    // Find or create the target group.
+    let mut group = config
+        .groups
+        .iter_mut()
+        .find(|g| g.name.as_deref() == Some(group_name));
+
+    if group.is_none() {
+        config.groups.push(RuleGroup {
+            name: Some(group_name.to_string()),
+            apps: apps.clone().unwrap_or_default(),
+            mappings: Default::default(),
+        });
+        group = Some(config.groups.last_mut().unwrap());
+    }
+
+    // If --apps was given, apply it to the group (only if creating new or
+    // the group has no apps yet).
+    if let (Some(g), Some(apps)) = (&mut group, &apps) {
+        if g.apps.is_empty() {
+            g.apps = apps.clone();
+        }
+    }
+
+    // Add the mapping.
+    if let Some(g) = group {
+        g.mappings.insert(trigger, vec![output]);
+    }
+
+    // Write back.
+    let yaml = serde_yaml::to_string(&config)?;
+    fs_err::write(&path, &yaml)?;
+
+    println!(
+        "Added '{}' -> '{}' to group '{}'",
+        trigger_str, output_str, group_name
+    );
 
     Ok(())
 }

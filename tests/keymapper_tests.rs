@@ -319,3 +319,199 @@ fn check_invalid_key_names() {
     assert!(stderr.contains("failed to parse"));
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// ---------------------------------------------------------------------------
+// config create subcommand
+// ---------------------------------------------------------------------------
+
+#[test]
+fn config_creates_empty_file() {
+    let dir = env::temp_dir().join("keymapper_test_create");
+    std::fs::create_dir_all(&dir).expect("failed to create temp dir");
+
+    // Use the CWD-based config path so we can control the location.
+    let output = Command::new(bin_path())
+        .args(["config", "add", "CapsLock", "LeftControl"])
+        .current_dir(&dir)
+        .output()
+        .expect("failed to run keymapper");
+
+    assert!(
+        output.status.success(),
+        "keymapper exited with {}\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Added"));
+
+    // Verify the file was created and contains the mapping.
+    let config_path = dir.join("config.yaml");
+    assert!(config_path.is_file());
+    let contents = std::fs::read_to_string(&config_path).unwrap();
+    assert!(contents.contains("CapsLock"));
+    assert!(contents.contains("LeftControl"));
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn config_add_to_existing_file() {
+    let dir = write_config_dir(
+        "add_existing",
+        r#"
+- name: "my rules"
+  mappings:
+    CapsLock: LeftControl
+"#,
+    );
+
+    // Add a second mapping to the same group.
+    let output = Command::new(bin_path())
+        .args(["config", "add", "--group", "my rules", "Tab", "Backspace"])
+        .current_dir(&dir)
+        .output()
+        .expect("failed to run keymapper");
+
+    assert!(
+        output.status.success(),
+        "keymapper exited with {}\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Added"));
+
+    // Verify the file contains both mappings.
+    let contents = std::fs::read_to_string(dir.join("config.yaml")).unwrap();
+    assert!(contents.contains("CapsLock"));
+    assert!(contents.contains("Tab"));
+    assert!(contents.contains("Backspace"));
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn config_add_creates_new_group() {
+    let dir = write_config_dir(
+        "add_new_group",
+        r#"
+- name: "existing"
+  mappings:
+    CapsLock: LeftControl
+"#,
+    );
+
+    // Add a mapping to a new group.
+    let output = Command::new(bin_path())
+        .args([
+            "config",
+            "add",
+            "--group",
+            "new group",
+            "Ctrl+H",
+            "LeftArrow",
+        ])
+        .current_dir(&dir)
+        .output()
+        .expect("failed to run keymapper");
+
+    assert!(
+        output.status.success(),
+        "keymapper exited with {}\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Verify the file contains both groups.
+    let contents = std::fs::read_to_string(dir.join("config.yaml")).unwrap();
+    assert!(contents.contains("existing"));
+    assert!(contents.contains("new group"));
+    // "Ctrl" normalizes to "LeftControl" on all platforms.
+    assert!(contents.contains("LeftControl+H"));
+    assert!(contents.contains("LeftArrow"));
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn config_add_invalid_trigger_fails() {
+    let dir = write_config_dir(
+        "add_bad_trigger",
+        r#"
+- name: "test"
+  mappings:
+    CapsLock: LeftControl
+"#,
+    );
+
+    let output = Command::new(bin_path())
+        .args(["config", "add", "NoSuchKey", "CapsLock"])
+        .current_dir(&dir)
+        .output()
+        .expect("failed to run keymapper");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("invalid trigger"));
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn config_add_invalid_output_fails() {
+    let dir = write_config_dir(
+        "add_bad_output",
+        r#"
+- name: "test"
+  mappings:
+    CapsLock: LeftControl
+"#,
+    );
+
+    let output = Command::new(bin_path())
+        .args(["config", "add", "CapsLock", "FakeKey"])
+        .current_dir(&dir)
+        .output()
+        .expect("failed to run keymapper");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("invalid output"));
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn config_add_with_apps() {
+    let dir = write_config_dir("add_apps", "groups: []");
+
+    let output = Command::new(bin_path())
+        .args([
+            "config",
+            "add",
+            "--group",
+            "iterm",
+            "--apps",
+            "iTerm2",
+            "Ctrl+H",
+            "LeftArrow",
+        ])
+        .current_dir(&dir)
+        .output()
+        .expect("failed to run keymapper");
+
+    assert!(
+        output.status.success(),
+        "keymapper exited with {}\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let contents = std::fs::read_to_string(dir.join("config.yaml")).unwrap();
+    assert!(contents.contains("iTerm2"));
+
+    std::fs::remove_dir_all(&dir).ok();
+}
