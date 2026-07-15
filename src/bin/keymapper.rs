@@ -115,7 +115,6 @@ fn load_config() -> Result<(PathBuf, String), Box<dyn std::error::Error>> {
         |e| -> Box<dyn std::error::Error> {
             eprintln!("Error: {e}");
             std::process::exit(1);
-            unreachable!()
         },
     )?;
 

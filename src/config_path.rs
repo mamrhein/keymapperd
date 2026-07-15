@@ -30,13 +30,19 @@ pub fn default_config_path() -> Option<PathBuf> {
 /// Search standard platform directories for the user configuration file.
 ///
 /// Search order:
-/// 1. Platform-specific application config directory
-/// 2. Current working directory (development convenience)
+/// 1. Current working directory (development convenience)
+/// 2. Platform-specific application config directory
 ///
 /// Symbolic links are rejected; `config.yaml` must be a regular file.
 /// Returns `None` when no configuration file exists in any search location.
 pub fn find_config_path() -> Option<PathBuf> {
     let candidate = |dir: &Path| dir.join(CONFIG_FILE);
+
+    // CWD (development / manual invocation).
+    let path = candidate(Path::new("."));
+    if path.is_file() && !is_symlink(&path) {
+        return Some(path);
+    }
 
     // Platform-specific application directory.
     if let Some(dir) = platform_config_dir() {
@@ -44,12 +50,6 @@ pub fn find_config_path() -> Option<PathBuf> {
         if path.is_file() && !is_symlink(&path) {
             return Some(path);
         }
-    }
-
-    // CWD (development / manual invocation).
-    let path = candidate(Path::new("."));
-    if path.is_file() && !is_symlink(&path) {
-        return Some(path);
     }
 
     None
@@ -88,7 +88,10 @@ pub fn find_config_path_strict() -> Result<PathBuf, String> {
 
 /// Iterate over the search locations in priority order.
 fn search_dirs() -> impl Iterator<Item = PathBuf> {
-    platform_config_dir().into_iter().chain([cwd_path()])
+    [cwd_path()]
+        .into_iter()
+        .filter_map(|d| d)
+        .chain(platform_config_dir().into_iter())
 }
 
 /// Return the current working directory, or `None` if it cannot be determined.

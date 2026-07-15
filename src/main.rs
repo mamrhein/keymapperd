@@ -16,7 +16,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| {
             eprintln!("Error: {}", e);
             std::process::exit(1);
-            unreachable!()
         })?;
 
     // Resolve to an absolute path so the watcher and cache compiler have
