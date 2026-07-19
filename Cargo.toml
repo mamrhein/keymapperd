@@ -2,7 +2,7 @@
 name = "keymapperd"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 authors = ["Michael Amrhein <michael@adrhinum.de>"]
 description = "Cross-platform key-remapping daemon for macOS, Linux, and Windows"
 readme = "README.md"
@@ -33,7 +33,7 @@ fs-err = "3"
 evdev = "0.13"
 libc = "0.2"
 uinput = "0.1"
-xcb = "1.2" # window enumeration for `keymapper appnames`
+xcb = "1.7" # window enumeration for `keymapper appnames`
 
 # macOS framework bindings
 [target.'cfg(target_os = "macos")'.dependencies]
