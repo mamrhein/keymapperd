@@ -16,7 +16,7 @@ use std::{
     time::Duration,
 };
 
-use evdev::{Device, EventType, Key as EvdevKey};
+use evdev::{Device, EventType};
 use parking_lot::RwLock;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -305,7 +305,7 @@ impl<'de> Deserialize<'de> for Key {
         D: Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
-        Self::from_str(&s).ok_or_else(|| {
+        Self::try_from_str(&s).ok_or_else(|| {
             serde::de::Error::custom(crate::key_names::unknown_key_error(&s))
         })
     }
@@ -344,7 +344,7 @@ fn modifier_bit_to_code(bit: u8) -> Option<u16> {
 }
 
 fn emit_key_event(
-    device: &mut uinput::VirtualDevice,
+    device: &mut uinput::Device,
     native_key: &NativeKey,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut pressed_modifiers: Vec<u16> = Vec::new();
@@ -352,7 +352,7 @@ fn emit_key_event(
     for bit in 0..8 {
         if (native_key.modifiers >> bit) & 1 == 1 {
             if let Some(code) = modifier_bit_to_code(bit) {
-                device.press(&EvdevKey::new(code))?;
+                device.write(EventType::KEY.0 as _, code as _, 1)?;
                 pressed_modifiers.push(code);
                 device.synchronize()?;
                 thread::sleep(Duration::from_millis(1));
@@ -360,16 +360,16 @@ fn emit_key_event(
         }
     }
 
-    device.press(&EvdevKey::new(native_key.base))?;
+    device.write(EventType::KEY.0 as _, native_key.base as _, 1)?;
     device.synchronize()?;
     thread::sleep(Duration::from_millis(1));
 
-    device.release(&EvdevKey::new(native_key.base))?;
+    device.write(EventType::KEY.0 as _, native_key.base as _, 0)?;
     device.synchronize()?;
     thread::sleep(Duration::from_millis(1));
 
     for code in pressed_modifiers.into_iter().rev() {
-        device.release(&EvdevKey::new(code))?;
+        device.write(EventType::KEY.0 as _, code as _, 0)?;
         device.synchronize()?;
         thread::sleep(Duration::from_millis(1));
     }
@@ -422,7 +422,7 @@ fn find_keyboard_device() -> Result<Device, Box<dyn std::error::Error>> {
     Err("No keyboard device found that supports EV_KEY".into())
 }
 
-pub(crate) fn start_mapping(
+pub fn start_mapping(
     lookup: Arc<RwLock<dyn Lookup>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut raw_device = find_keyboard_device()?;
@@ -482,14 +482,29 @@ pub(crate) fn start_mapping(
                             continue;
                         }
 
-                        let key = EvdevKey::new(code);
                         if value == 1 {
-                            virtual_device.press(&key)?;
+                            virtual_device.write(
+                                EventType::KEY.0 as _,
+                                code as _,
+                                1,
+                            )?;
                         } else if value == 0 {
-                            virtual_device.release(&key)?;
+                            virtual_device.write(
+                                EventType::KEY.0 as _,
+                                code as _,
+                                0,
+                            )?;
                         } else {
-                            virtual_device.press(&key)?;
-                            virtual_device.release(&key)?;
+                            virtual_device.write(
+                                EventType::KEY.0 as _,
+                                code as _,
+                                1,
+                            )?;
+                            virtual_device.write(
+                                EventType::KEY.0 as _,
+                                code as _,
+                                0,
+                            )?;
                         }
                         virtual_device.synchronize()?;
                     }
