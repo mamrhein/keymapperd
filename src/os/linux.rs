@@ -387,7 +387,98 @@ extern "C" fn signal_handler(_sig: libc::c_int) {
 
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 
+/// Determine the seat of the current user session.
+///
+/// Strategy (first match wins):
+/// 1. `XDG_SEAT` environment variable.
+/// 2. Parse the session file under `/run/systemd/sessions/<id>` and read the `SEAT=` line.
+/// 3. Fallback to `seat0`.
+fn determine_seat() -> String {
+    // Check the environment first.
+    if let Ok(seat) = std::env::var("XDG_SEAT")
+        && !seat.is_empty() {
+            return seat;
+        }
+
+    // Resolve the session id and look up the seat in its systemd session file.
+    if let Ok(session_id) = std::fs::read_to_string("/proc/self/sessionid") {
+        let session_id = session_id.trim();
+        let path = format!("/run/systemd/sessions/{session_id}");
+        if let Ok(contents) = std::fs::read_to_string(&path) {
+            for line in contents.lines() {
+                if let Some(seat) = line.strip_prefix("SEAT=")
+                    && !seat.is_empty() {
+                        return seat.to_string();
+                    }
+            }
+        }
+    }
+
+    // Default fallback.
+    "seat0".to_string()
+}
+
+/// Find the first keyboard input device that belongs to the current user seat.
+///
+/// This uses `udevrs` to enumerate devices tagged for the seat and filtered to
+/// keyboards.  If udev enumeration fails or returns no candidates it falls back
+/// to the legacy approach of scanning `/dev/input/event*`.
 fn find_keyboard_device() -> Result<Device, Box<dyn std::error::Error>> {
+    let seat = determine_seat();
+
+    // Try seat-aware udev enumeration first.
+    match find_keyboard_device_udev(&seat) {
+        Ok(device) => Ok(device),
+        Err(e) => {
+            eprintln!(
+                "warning: udev keyboard discovery failed ({e}), falling back to \
+                 /dev/input scan"
+            );
+            find_keyboard_device_fallback()
+        }
+    }
+}
+
+/// Find a keyboard device for `seat` using udev.
+fn find_keyboard_device_udev(seat: &str) -> Result<Device, Box<dyn std::error::Error>> {
+    use std::sync::Arc;
+
+    let udev = Arc::new(udevrs::Udev::new());
+    let mut enumerate = udevrs::UdevEnumerate::new(Arc::clone(&udev));
+
+    enumerate.add_match_subsystem("input")?;
+    enumerate.add_match_property("ID_INPUT_KEYBOARD", "1")?;
+    enumerate.scan_devices()?;
+
+    for syspath_entry in enumerate.devices() {
+        let sys = syspath_entry.syspath();
+        let Ok(udev_device) = udevrs::UdevDevice::new_from_syspath(Arc::clone(&udev), sys) else {
+            continue;
+        };
+
+        // Skip devices that do not belong to the target seat.
+        if let Some(dev_seat) = udev_device.get_property_value("ID_SEAT")
+            && dev_seat != seat {
+                continue;
+            }
+
+        // Resolve the device node (e.g. /dev/input/event3).
+        let devnode = udev_device.devnode();
+        if devnode.is_empty() {
+            continue;
+        }
+
+        if let Ok(device) = Device::open(devnode)
+            && device.supported_events().contains(EventType::KEY) {
+                return Ok(device);
+            }
+    }
+
+    Err(format!("no keyboard device found for seat {seat}").into())
+}
+
+/// Fallback: scan `/dev/input/event*` and return the first keyboard-capable device.
+fn find_keyboard_device_fallback() -> Result<Device, Box<dyn std::error::Error>> {
     use std::{fs, path::Path};
 
     let input_path = Path::new("/dev/input");
