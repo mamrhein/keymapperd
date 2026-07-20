@@ -7,15 +7,6 @@
 // $Source$
 // $Revision$
 
-// ---------------------------------------------------------------------------
-// Copyright:   (c) 2026 ff. Michael Amrhein (michael@adrhinum.de)
-// License:     This program is part of a larger application. For license
-//              details please read the file LICENSE.TXT provided together
-//              with the application.
-// ---------------------------------------------------------------------------
-// $Source$
-// $Revision$
-
 //! Enumerates running applications and returns the exact `app_name` values
 //! that keymapperd uses for config matching.  The returned names are produced
 //! by the same platform APIs that `active-win-pos-rs` uses internally, so they
