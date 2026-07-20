@@ -35,6 +35,7 @@ fn write_config_dir(label: &str, content: &str) -> PathBuf {
 fn run_check_in_dir(dir: &PathBuf) -> String {
     let output = Command::new(bin_path())
         .args(["config", "check"])
+        .arg(dir)
         .current_dir(dir)
         .output()
         .expect("failed to run keymapper");
@@ -49,11 +50,12 @@ fn run_check_in_dir(dir: &PathBuf) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
-/// Run `keymapper config <subcommand>` in the given directory and return
+/// Run `keymapper config check` in the given directory and return
 /// stderr.  The process is expected to fail (non-zero exit code).
 fn run_check_fails_in_dir(dir: &PathBuf) -> String {
     let output = Command::new(bin_path())
         .args(["config", "check"])
+        .arg(dir)
         .current_dir(dir)
         .output()
         .expect("failed to run keymapper");
@@ -117,7 +119,7 @@ fn check_no_config_file() {
     std::fs::create_dir_all(&dir).ok();
 
     let stderr = run_check_fails_in_dir(&dir);
-    assert!(stderr.contains("No configuration file found"));
+    assert!(stderr.contains("config file not found"));
 
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -249,6 +251,90 @@ fn check_multiple_issues() {
     assert!(out.contains("remaps to itself (no-op)"));
     assert!(out.contains("CapsLock appears in multiple groups"));
     assert!(out.contains("form a circular pair (swap)"));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---------------------------------------------------------------------------
+// config check with explicit path
+// ---------------------------------------------------------------------------
+
+/// Run `keymapper config check <path>` and return stdout.  Expects success.
+fn run_check_path(path: &str) -> String {
+    let output = Command::new(bin_path())
+        .args(["config", "check", path])
+        .output()
+        .expect("failed to run keymapper");
+
+    assert!(
+        output.status.success(),
+        "keymapper exited with {}\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+/// Run `keymapper config check <path>` and return stderr.  Expects failure.
+fn run_check_path_fails(path: &str) -> String {
+    let output = Command::new(bin_path())
+        .args(["config", "check", path])
+        .output()
+        .expect("failed to run keymapper");
+
+    assert!(
+        !output.status.success(),
+        "keymapper should have failed but exited successfully"
+    );
+
+    String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+#[test]
+fn check_with_file_path() {
+    let dir = write_config_dir(
+        "explicit_file",
+        r#"
+- mappings:
+    CapsLock: LeftControl
+"#,
+    );
+    let file_path = dir.join("config.yaml");
+    let out = run_check_path(file_path.to_str().unwrap());
+    assert!(out.contains("no issues found"));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn check_with_directory_path() {
+    let dir = write_config_dir(
+        "explicit_dir",
+        r#"
+- mappings:
+    CapsLock: LeftControl
+"#,
+    );
+    let out = run_check_path(dir.to_str().unwrap());
+    assert!(out.contains("no issues found"));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn check_with_nonexistent_path() {
+    let stderr = run_check_path_fails(
+        "/tmp/keymapper_test_nonexistent_path_12345/config.yaml",
+    );
+    assert!(stderr.contains("does not exist"));
+}
+
+#[test]
+fn check_with_empty_directory_path() {
+    let dir = env::temp_dir().join("keymapper_test_empty_dir");
+    std::fs::create_dir_all(&dir).ok();
+
+    let stderr = run_check_path_fails(dir.to_str().unwrap());
+    assert!(stderr.contains("not found"));
+
     std::fs::remove_dir_all(&dir).ok();
 }
 

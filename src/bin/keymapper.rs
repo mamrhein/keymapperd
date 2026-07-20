@@ -62,7 +62,13 @@ enum ConfigCommands {
     List,
 
     /// Validate and diagnose the configuration.
-    Check,
+    Check {
+        /// Path to a config file or directory containing `config.yaml`.
+        ///
+        /// When omitted, the standard search locations are used (CWD, then
+        /// the platform-specific application config directory).
+        path: Option<PathBuf>,
+    },
 
     /// Create an empty configuration file at the default location.
     Create,
@@ -92,7 +98,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Appnames => cmd_appnames()?,
         Commands::Config { command } => match command {
             ConfigCommands::List => cmd_config_list()?,
-            ConfigCommands::Check => cmd_config_check()?,
+            ConfigCommands::Check { path } => cmd_config_check(path)?,
             ConfigCommands::Create => cmd_config_create()?,
             ConfigCommands::Add {
                 trigger,
@@ -117,6 +123,39 @@ fn load_config() -> Result<(PathBuf, String), Box<dyn std::error::Error>> {
             std::process::exit(1);
         },
     )?;
+
+    let contents = fs_err::read_to_string(&path)?;
+
+    Ok((path, contents))
+}
+
+/// Load a config file from an explicit user-supplied path.
+///
+/// If *target* points to a regular file, that file is used.  If it points to
+/// a directory, `config.yaml` inside that directory is used.  Symbolic links
+/// are rejected in both cases.
+fn load_config_at(
+    target: &Path,
+) -> Result<(PathBuf, String), Box<dyn std::error::Error>> {
+    let path = if target.is_file() {
+        target.to_path_buf()
+    } else if target.is_dir() {
+        target.join("config.yaml")
+    } else {
+        return Err(format!(
+            "path '{}' does not exist or is not a file/directory",
+            target.display()
+        )
+        .into());
+    };
+
+    reject_symlink(&path)?;
+
+    if !path.is_file() {
+        return Err(
+            format!("config file not found: {}", path.display()).into()
+        );
+    }
 
     let contents = fs_err::read_to_string(&path)?;
 
@@ -159,8 +198,13 @@ fn cmd_config_list() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn cmd_config_check() -> Result<(), Box<dyn std::error::Error>> {
-    let (path, contents) = load_config()?;
+fn cmd_config_check(
+    target: Option<PathBuf>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (path, contents) = match target {
+        Some(t) => load_config_at(&t)?,
+        None => load_config()?,
+    };
 
     let config = keymapperd::config::AppConfig::load_from_str(&contents)
         .map_err(|err| format!("failed to parse {}: {err}", path.display()))?;
