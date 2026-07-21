@@ -14,7 +14,7 @@ use windows_sys::Win32::{
             CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW,
             Process32NextW, TH32CS_SNAPPROCESS,
         },
-        Threading::{
+        ProcessStatus::{
             CREATE_NO_WINDOW, CreateProcessW, PROCESS_INFORMATION,
             STARTUPINFOW,
         },

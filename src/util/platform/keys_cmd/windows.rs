@@ -9,18 +9,18 @@
 
 //! Windows implementation of `keymapper keys probe`.
 
-use std::sync::OnceLock;
-
 use windows_sys::Win32::{
-    Foundation::HWND,
+    Foundation::{HHOOK, HINSTANCE, WPARAM},
     System::LibraryLoader::GetModuleHandleW,
     UI::{
-        Input::KeyboardAndMouse::{MapVirtualKeyW, VIRTUAL_KEY},
+        Input::KeyboardAndMouse::{
+            GetKeyState, MapVirtualKeyW, VIRTUAL_KEY, VK_CONTROL,
+        },
         WindowsAndMessaging::{
-            CallNextHookEx, DispatchMessageW, GetKeyState, GetMessageW, HHOOK,
-            HINSTANCE, KBDLLHOOKSTRUCT, LPARAM, LRESULT, MSG, PostQuitMessage,
-            SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx,
-            VK_CONTROL, WH_KEYBOARD_LL, WM_KEYDOWN, WM_SYSKEYDOWN, WPARAM,
+            CallNextHookEx, DispatchMessageW, GetMessageW, KBDLLHOOKSTRUCT,
+            LPARAM, LRESULT, MSG, PostQuitMessage, SetWindowsHookExW,
+            TranslateMessage, UnhookWindowsHookEx, WH_KEYBOARD_LL, WM_KEYDOWN,
+            WM_SYSKEYDOWN,
         },
     },
 };
@@ -31,7 +31,8 @@ use crate::platform::Key;
 const VK_LCONTROL: VIRTUAL_KEY = 0xA2;
 const VK_RCONTROL: VIRTUAL_KEY = 0xA3;
 
-static HOOK_HANDLE: OnceLock<HHOOK> = OnceLock::new();
+static HOOK_HANDLE: parking_lot::Mutex<*mut std::ffi::c_void> =
+    parking_lot::Mutex::new(std::ptr::null_mut());
 
 /// Check whether a virtual-key code corresponds to a modifier key.
 fn is_modifier(vk: VIRTUAL_KEY) -> bool {
@@ -53,7 +54,8 @@ pub fn probe() {
     println!("Press keys to see their names and codes.");
     println!("Press Control+Escape to exit.\n");
 
-    let h_instance: HINSTANCE = unsafe { GetModuleHandleW(std::ptr::null()) };
+    let h_instance: HINSTANCE =
+        unsafe { GetModuleHandleW(std::ptr::null::<u16>()) };
 
     let handle: HHOOK = unsafe {
         SetWindowsHookExW(
@@ -64,17 +66,17 @@ pub fn probe() {
         )
     };
 
-    if handle == 0 {
+    if handle.is_null() {
         eprintln!("Failed to install keyboard hook");
         std::process::exit(1);
     }
 
-    HOOK_HANDLE.set(handle).ok();
+    *HOOK_HANDLE.lock() = handle as _;
 
     // Run the message loop.
     unsafe {
         let mut msg: MSG = std::mem::zeroed();
-        while GetMessageW(&mut msg, HWND(0), 0, 0) > 0 {
+        while GetMessageW(&mut msg, 0 as _, 0, 0) > 0 {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }

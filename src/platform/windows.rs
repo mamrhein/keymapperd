@@ -8,8 +8,6 @@
 // $Revision$
 
 use std::{
-    fmt::Debug,
-    ptr::null_mut,
     sync::{Arc, OnceLock},
     thread,
     time::Duration,
@@ -18,6 +16,7 @@ use std::{
 use parking_lot::RwLock;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use windows_sys::Win32::{
+    Foundation::{HINSTANCE, HHOOK, LPARAM, LRESULT, WPARAM},
     System::LibraryLoader::GetModuleHandleW,
     UI::{
         Input::KeyboardAndMouse::{
@@ -25,10 +24,9 @@ use windows_sys::Win32::{
             KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, SendInput, VIRTUAL_KEY,
         },
         WindowsAndMessaging::{
-            CallNextHookEx, GetMessageW, HHOOK, HINSTANCE, KBDLLHOOKSTRUCT,
-            LPARAM, LRESULT, MSG, SetWindowsHookExW, UnhookWindowsHookEx,
+            CallNextHookEx, GetMessageW, KBDLLHOOKSTRUCT, MSG,
+            SetWindowsHookExW, UnhookWindowsHookEx,
             WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
-            WPARAM,
         },
     },
 };
@@ -767,32 +765,31 @@ fn vk_to_modifier_bit(vk: VIRTUAL_KEY) -> Option<u8> {
 // Low-level keyboard hook
 // ---------------------------------------------------------------------------
 
-static SHARED_LOOKUP: OnceLock<Arc<RwLock<dyn Lookup + Debug>>> =
-    OnceLock::new();
-static HOOK_HANDLE: OnceLock<HHOOK> = OnceLock::new();
+static SHARED_LOOKUP: OnceLock<Arc<RwLock<dyn Lookup>>> = OnceLock::new();
+static HOOK_HANDLE: parking_lot::Mutex<*mut std::ffi::c_void> =
+    parking_lot::Mutex::new(std::ptr::null_mut());
 
-fn set_shared_lookup(lookup: Arc<RwLock<dyn Lookup + Debug>>) {
+fn set_shared_lookup(lookup: Arc<RwLock<dyn Lookup>>) {
     SHARED_LOOKUP
         .set(lookup)
         .expect("shared lookup already initialised");
 }
 
 fn set_hook_handle(handle: HHOOK) {
-    HOOK_HANDLE
-        .set(handle)
-        .expect("hook handle already initialised");
+    *HOOK_HANDLE.lock() = handle;
 }
 
 fn hook_handle() -> HHOOK {
-    *HOOK_HANDLE.get().expect("hook handle not initialised")
+    *HOOK_HANDLE.lock()
 }
 
 pub fn start_mapping(
-    lookup: Arc<RwLock<dyn Lookup + Debug>>,
+    lookup: Arc<RwLock<dyn Lookup>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     set_shared_lookup(lookup);
 
-    let h_instance: HINSTANCE = unsafe { GetModuleHandleW(null_mut()) };
+    let h_instance: HINSTANCE =
+        unsafe { GetModuleHandleW(std::ptr::null::<u16>()) };
 
     let handle: HHOOK = unsafe {
         SetWindowsHookExW(
@@ -803,7 +800,7 @@ pub fn start_mapping(
         )
     };
 
-    if handle == 0 {
+    if handle.is_null() {
         return Err("Failed to install global keyboard hook".into());
     }
     set_hook_handle(handle);
@@ -811,7 +808,7 @@ pub fn start_mapping(
 
     unsafe {
         let mut msg: MSG = std::mem::zeroed();
-        while GetMessageW(&mut msg, 0, 0, 0) > 0 {}
+        while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {}
         UnhookWindowsHookEx(hook_handle());
     }
 
@@ -871,3 +868,4 @@ extern "system" fn low_level_keyboard_proc(
 
     unsafe { CallNextHookEx(hook_handle(), code, w_param, l_param) }
 }
+x

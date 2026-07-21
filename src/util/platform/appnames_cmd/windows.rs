@@ -16,7 +16,7 @@
 use std::{collections::HashSet, path::Path};
 
 use windows_sys::Win32::{
-    Foundation::HWND,
+    Foundation::HANDLE,
     System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, MODULEENTRY32W, Module32FirstW,
         TH32CS_SNAPMODULE,
@@ -27,7 +27,8 @@ use windows_sys::Win32::{
     },
 };
 
-type SnapshotHandle = i64;
+/// SAFETY: Handle type alias for ToolHelp snapshot handles.
+type SnapshotHandle = HANDLE;
 
 /// Convert a null-terminated UTF-16 slice to a Rust String.
 fn utf16_to_string(data: &[u16]) -> String {
@@ -148,21 +149,21 @@ fn get_process_exe_path(pid: u32) -> Option<String> {
     unsafe {
         let mod_snap: SnapshotHandle =
             CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | pid, pid);
-        if mod_snap < 0 {
+        if mod_snap.is_null() {
             return None;
         }
 
         let mut me = std::mem::zeroed::<MODULEENTRY32W>();
         me.dwSize = std::mem::size_of::<MODULEENTRY32W>() as u32;
 
-        let result = if Module32FirstW(mod_snap as _, &mut me) == 1 {
+        let result = if Module32FirstW(mod_snap, &mut me) == 1 {
             let path = utf16_to_string(&me.szExePath);
             if path.is_empty() { None } else { Some(path) }
         } else {
             None
         };
 
-        windows_sys::Win32::Foundation::CloseHandle(mod_snap as _);
+        windows_sys::Win32::Foundation::CloseHandle(mod_snap);
         result
     }
 }
@@ -172,10 +173,10 @@ struct WindowCollector {
     pids: HashSet<u32>,
 }
 
-extern "system" fn enum_windows_proc(hwnd: HWND, param: usize) -> i32 {
-    if unsafe { IsWindowVisible(hwnd) } == 1 {
+extern "system" fn enum_windows_proc(hwnd: isize, param: usize) -> i32 {
+    if unsafe { IsWindowVisible(hwnd as _) } == 1 {
         let mut pid: u32 = 0;
-        unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+        unsafe { GetWindowThreadProcessId(hwnd as _, Some(&mut pid)) };
         if pid != 0 {
             let collector = param as *mut WindowCollector;
             unsafe {
