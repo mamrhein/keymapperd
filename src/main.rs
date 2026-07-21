@@ -70,5 +70,5 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Cross-platform runtime engines fully synchronized.");
 
-    keymapper::os::start_mapping(Arc::clone(&state))
+    keymapper::platform::start_mapping(Arc::clone(&state))
 }

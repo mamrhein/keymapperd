@@ -11,10 +11,10 @@ pub mod config;
 pub mod config_path;
 mod key_names;
 pub mod mapping_cache;
-pub mod os;
+pub mod platform;
 pub mod state;
 pub mod watcher;
 
 // Re-export the platform-specific Key type so downstream code (and tests)
 // can refer to it via the crate root.
-pub use os::Key;
+pub use platform::Key;
