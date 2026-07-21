@@ -14,7 +14,7 @@ categories = ["utilities"]
 
 [[bin]]
 name = "keymapper"
-path = "src/bin/keymapper.rs"
+path = "src/keymapper.rs"
 
 [[bin]]
 name = "keymapperd"

@@ -11,7 +11,6 @@
 
 use std::sync::OnceLock;
 
-use keymapper::platform::Key;
 use windows_sys::{
     Windows::Win32::{
         Foundation::HWND,
@@ -29,6 +28,8 @@ use windows_sys::{
     },
     core::PCWSTR,
 };
+
+use crate::platform::Key;
 
 /// Windows virtual-key code for the Control key.
 const VK_LCONTROL: VIRTUAL_KEY = 0xA2;

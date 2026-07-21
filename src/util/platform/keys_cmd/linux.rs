@@ -12,7 +12,8 @@
 use std::time::Duration;
 
 use evdev::{Device, EventType, FetchEventSync};
-use keymapper::platform::Key;
+
+use crate::platform::Key;
 
 /// Check whether a keycode corresponds to a modifier key.
 fn is_modifier(code: u16) -> bool {

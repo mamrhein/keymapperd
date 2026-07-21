@@ -10,11 +10,10 @@
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
-use keymapper::common::config::{AppConfig, KeyEvent, RuleGroup};
-
-mod apps;
-mod keys;
-mod server;
+use keymapper::{
+    common::config::{AppConfig, KeyEvent, RuleGroup},
+    util::platform::{appnames_cmd, keys_cmd, server_cmd},
+};
 
 /// CLI utility for managing the keymapperd configuration.
 #[derive(Parser)]
@@ -210,7 +209,7 @@ fn reject_symlink(path: &Path) -> Result<(), String> {
 }
 
 fn cmd_appnames() -> Result<(), Box<dyn std::error::Error>> {
-    let names = apps::list_app_names();
+    let names = appnames_cmd::list_app_names();
 
     if names.is_empty() {
         println!("No visible applications found.");
@@ -361,7 +360,7 @@ fn cmd_config_add(
 }
 
 fn cmd_server_status() -> Result<(), Box<dyn std::error::Error>> {
-    if server::is_running() {
+    if server_cmd::is_running() {
         println!("keymapperd is running");
     } else {
         println!("keymapperd is not running");
@@ -371,22 +370,23 @@ fn cmd_server_status() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn cmd_server_start() -> Result<(), Box<dyn std::error::Error>> {
-    if server::is_running() {
+    if server_cmd::is_running() {
         println!("keymapperd is already running");
         return Ok(());
     }
 
-    server::start().map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+    server_cmd::start()
+        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
     println!("keymapperd started");
 
     Ok(())
 }
 
 fn cmd_keys_list() -> Result<(), Box<dyn std::error::Error>> {
-    keys::list();
+    keys_cmd::list();
     Ok(())
 }
 
 fn cmd_keys_probe() {
-    keys::probe();
+    keys_cmd::probe();
 }

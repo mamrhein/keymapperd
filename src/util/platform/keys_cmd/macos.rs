@@ -9,12 +9,13 @@
 
 //! macOS implementation of `keymapper keys probe`.
 
-use keymapper::platform::Key;
 use objc2_core_foundation::{CFMachPort, CFRunLoop, kCFRunLoopCommonModes};
 use objc2_core_graphics::{
     CGEvent, CGEventField, CGEventFlags, CGEventTapLocation,
     CGEventTapOptions, CGEventTapPlacement, CGEventType, CGKeyCode,
 };
+
+use crate::platform::Key;
 
 /// Probe for key presses using a CGEventTap.
 pub fn probe() {

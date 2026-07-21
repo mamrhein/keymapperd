@@ -7,11 +7,6 @@
 // $Source$
 // $Revision$
 
-pub mod common;
-pub mod daemon;
-pub mod platform;
-pub mod util;
+//! CLI utility commands for the keymapper tool.
 
-// Re-export the platform-specific Key type so downstream code (and tests)
-// can refer to it via the crate root.
-pub use platform::Key;
+pub mod platform;
