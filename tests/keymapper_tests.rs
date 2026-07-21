@@ -411,11 +411,77 @@ fn check_invalid_key_names() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn config_creates_empty_file() {
-    let dir = env::temp_dir().join("keymapper_test_create");
+fn config_create_in_custom_dir() {
+    let dir = env::temp_dir().join("keymapper_test_create_custom");
     std::fs::create_dir_all(&dir).expect("failed to create temp dir");
 
-    // Use the CWD-based config path so we can control the location.
+    // Create an empty config in the custom directory.
+    let output = Command::new(bin_path())
+        .args(["config", "create"])
+        .arg(&dir)
+        .output()
+        .expect("failed to run keymapper");
+
+    assert!(
+        output.status.success(),
+        "keymapper exited with {}\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Verify the file was created.
+    let config_path = dir.join("config.yaml");
+    assert!(config_path.is_file());
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn config_create_already_exists() {
+    let dir = env::temp_dir().join("keymapper_test_create_exists");
+    std::fs::create_dir_all(&dir).expect("failed to create temp dir");
+    let config_path = dir.join("config.yaml");
+    std::fs::write(&config_path, "groups: []")
+        .expect("failed to write config");
+
+    // Try to create again in the same directory.
+    let output = Command::new(bin_path())
+        .args(["config", "create"])
+        .arg(&dir)
+        .output()
+        .expect("failed to run keymapper");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("already exists"), "stderr: {stderr}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---------------------------------------------------------------------------
+// config add subcommand
+// ---------------------------------------------------------------------------
+
+#[test]
+fn config_add_after_create() {
+    let dir = env::temp_dir().join("keymapper_test_create_add");
+    std::fs::create_dir_all(&dir).expect("failed to create temp dir");
+
+    // Create an empty config in the custom directory.
+    let output = Command::new(bin_path())
+        .args(["config", "create"])
+        .arg(&dir)
+        .output()
+        .expect("failed to run keymapper");
+
+    assert!(
+        output.status.success(),
+        "keymapper exited with {}\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Add a mapping to the newly created config.
     let output = Command::new(bin_path())
         .args(["config", "add", "CapsLock", "LeftControl"])
         .current_dir(&dir)
@@ -432,12 +498,52 @@ fn config_creates_empty_file() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Added"));
 
-    // Verify the file was created and contains the mapping.
-    let config_path = dir.join("config.yaml");
-    assert!(config_path.is_file());
-    let contents = std::fs::read_to_string(&config_path).unwrap();
+    // Verify the file contains the mapping.
+    let contents = std::fs::read_to_string(dir.join("config.yaml")).unwrap();
     assert!(contents.contains("CapsLock"));
     assert!(contents.contains("LeftControl"));
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn config_add_fails_without_config() {
+    let dir = env::temp_dir().join("keymapper_test_add_no_config");
+    std::fs::create_dir_all(&dir).expect("failed to create temp dir");
+
+    // Ensure the platform default config is temporarily out of the way so
+    // that `find_config_path` returns `None`.
+    let default_path = keymapperd::config_path::default_config_path()
+        .expect("no default path");
+    let had_existing = default_path.is_file();
+    let backup_path = if had_existing {
+        let backup = env::temp_dir().join("keymapper_test_backup_config.yaml");
+        std::fs::rename(&default_path, &backup)
+            .expect("failed to backup config");
+        Some(backup)
+    } else {
+        None
+    };
+
+    // Run `config add` in an empty directory with no platform config — should
+    // fail.
+    let output = Command::new(bin_path())
+        .args(["config", "add", "CapsLock", "LeftControl"])
+        .current_dir(&dir)
+        .output()
+        .expect("failed to run keymapper");
+
+    // Restore the original config.
+    if let Some(backup) = backup_path {
+        std::fs::rename(&backup, &default_path).ok();
+    }
+
+    assert!(!output.status.success(), "unexpected success");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("not found") || stderr.contains("No configuration"),
+        "stderr: {stderr}"
+    );
 
     std::fs::remove_dir_all(&dir).ok();
 }

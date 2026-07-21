@@ -91,8 +91,16 @@ enum ConfigCommands {
         path: Option<PathBuf>,
     },
 
-    /// Create an empty configuration file at the default location.
-    Create,
+    /// Create an empty configuration file at the given directory or the
+    /// default platform-specific location when omitted.
+    Create {
+        /// Directory where `config.yaml` will be created.
+        ///
+        /// When omitted, the file is placed in the default platform-specific
+        /// application config directory (e.g. `~/Library/Application
+        /// Support/keymapperd` on macOS).
+        dir: Option<PathBuf>,
+    },
 
     /// Add a key-mapping rule to the configuration.
     Add {
@@ -120,7 +128,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Config { command } => match command {
             ConfigCommands::List => cmd_config_list()?,
             ConfigCommands::Check { path } => cmd_config_check(path)?,
-            ConfigCommands::Create => cmd_config_create()?,
+            ConfigCommands::Create { dir } => cmd_config_create(dir)?,
             ConfigCommands::Add {
                 trigger,
                 output,
@@ -248,9 +256,14 @@ fn cmd_config_check(
     Ok(())
 }
 
-fn cmd_config_create() -> Result<(), Box<dyn std::error::Error>> {
-    let path = keymapperd::config_path::default_config_path()
-        .ok_or("could not determine default config directory")?;
+fn cmd_config_create(
+    dir: Option<PathBuf>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let path = match dir {
+        Some(d) => d.join("config.yaml"),
+        None => keymapperd::config_path::default_config_path()
+            .ok_or("could not determine default config directory")?,
+    };
 
     // Check if the file already exists.
     if path.is_file() {
@@ -288,28 +301,21 @@ fn cmd_config_add(
     let output = KeyEvent::parse(output_str)
         .map_err(|e| format!("invalid output '{}': {e}", output_str))?;
 
-    // Find or create the config file.  Prefer CWD for development
-    // convenience, falling back to the platform default directory.
-    let path = keymapperd::config_path::find_config_path()
-        .or_else(|| {
-            // No config exists yet — create one in CWD.
-            let cwd_path = std::path::PathBuf::from("config.yaml");
-            Some(cwd_path)
-        })
-        .or_else(keymapperd::config_path::default_config_path);
+    // Find an existing config file.
+    let path =
+        keymapperd::config_path::find_config_path().ok_or_else(|| {
+            eprintln!(
+                "No configuration file found. Create one with `keymapper \
+                 config create`"
+            );
+            "configuration file not found"
+        })?;
 
-    let path = path.ok_or("could not determine config file location")?;
-
-    // Load existing config or start fresh.  Reject symlinks on load.
-    let mut config = if path.is_file() {
-        reject_symlink(&path)?;
-        let contents = fs_err::read_to_string(&path)?;
-        AppConfig::load_from_str(&contents).map_err(|err| {
-            format!("failed to parse {}: {err}", path.display())
-        })?
-    } else {
-        AppConfig::default()
-    };
+    // Load existing config.  `find_config_path` guarantees the file exists.
+    reject_symlink(&path)?;
+    let contents = fs_err::read_to_string(&path)?;
+    let mut config = AppConfig::load_from_str(&contents)
+        .map_err(|err| format!("failed to parse {}: {err}", path.display()))?;
 
     // Find or create the target group.
     let mut group = config
