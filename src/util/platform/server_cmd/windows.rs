@@ -9,17 +9,66 @@
 
 use windows_sys::Win32::{
     Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE},
-    System::{
-        Diagnostics::ToolHelp::{
-            CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW,
-            Process32NextW, TH32CS_SNAPPROCESS,
-        },
-        ProcessStatus::{
-            CREATE_NO_WINDOW, CreateProcessW, PROCESS_INFORMATION,
-            STARTUPINFOW,
-        },
+    System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW,
+        Process32NextW, TH32CS_SNAPPROCESS,
     },
 };
+
+/// Creation flag to suppress console window creation.
+#[allow(non_upper_case_globals)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+/// STARTUPINFOW — describes how a new process should start.
+#[allow(non_snake_case)]
+#[repr(C)]
+struct STARTUPINFOW {
+    cb: u32,
+    lpReserved: *mut u16,
+    lpDesktop: *mut u16,
+    lpTitle: *mut u16,
+    dwX: u32,
+    dwY: u32,
+    dwXSize: u32,
+    dwYSize: u32,
+    dwXCountChars: u32,
+    dwYCountChars: u32,
+    dwFillAttribute: u32,
+    dwFlags: u32,
+    wShowWindow: u16,
+    cbReserved2: u16,
+    lpReserved2: *mut u8,
+    hStdInput: HANDLE,
+    hStdOutput: HANDLE,
+    hStdError: HANDLE,
+}
+
+/// PROCESS_INFORMATION — receives information about a new process.
+#[allow(non_snake_case)]
+#[repr(C)]
+struct PROCESS_INFORMATION {
+    hProcess: HANDLE,
+    hThread: HANDLE,
+    dwProcessId: u32,
+    dwThreadId: u32,
+}
+
+// Declare `CreateProcessW` directly, since it is not exposed by our feature set.
+#[allow(non_snake_case)]
+unsafe extern "system" {
+    fn CreateProcessW(
+        lpApplicationName: *mut u16,
+        lpCommandLine: *mut u16,
+        lpProcessAttributes: *mut std::ffi::c_void,
+        lpThreadAttributes: *mut std::ffi::c_void,
+        bInheritHandles: i32,
+        dwCreationFlags: u32,
+        lpEnvironment: *mut std::ffi::c_void,
+        lpCurrentDirectory: *mut u16,
+        lpStartupInfo: *mut STARTUPINFOW,
+        lpProcessInformation: *mut PROCESS_INFORMATION,
+    ) -> i32;
+}
 
 /// Check whether a process with the given name is running by enumerating
 /// processes via the ToolHelp32 API.  Uses native Windows APIs instead of
@@ -27,11 +76,12 @@ use windows_sys::Win32::{
 /// fragility.
 pub fn is_daemon_running(name: &str) -> bool {
     // Normalise the image name — always compare against the `.exe` form.
-    let target = to_wide(if name.ends_with(".exe") {
-        name
+    let target_name = if name.ends_with(".exe") {
+        name.to_string()
     } else {
-        &format!("{name}.exe")
-    });
+        format!("{name}.exe")
+    };
+    let target = to_wide(&target_name);
 
     let snapshot: HANDLE =
         unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
@@ -90,6 +140,7 @@ fn wide_eq(a: &[u16], b: &[u16]) -> bool {
 /// Uses `CreateProcessW` directly instead of going through `cmd.exe`, avoiding
 /// any command injection surface from shell interpretation.
 pub fn spawn_daemon(name: &str) -> Result<(), String> {
+    // Pin the wide command string so the reference outlives the unsafe block.
     let cmd_wide = to_wide(name);
     let mut si: STARTUPINFOW = unsafe { std::mem::zeroed() };
     si.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
@@ -100,16 +151,16 @@ pub fn spawn_daemon(name: &str) -> Result<(), String> {
     // executable name (including path lookup) is parsed from lpCommandLine.
     let result = unsafe {
         CreateProcessW(
-            std::ptr::null(), // lpApplicationName: parse from command line
-            cmd_wide.as_ptr() as _, // lpCommandLine: mutable per API contract
+            std::ptr::null_mut(), // lpApplicationName: parse from command line
+            cmd_wide.as_ptr() as *mut u16, // lpCommandLine: mutable per API contract
             std::ptr::null_mut(), // lpProcessAttributes
             std::ptr::null_mut(), // lpThreadAttributes
-            0,                // bInheritHandles
+            0, // bInheritHandles
             CREATE_NO_WINDOW, // dwCreationFlags: no console window
             std::ptr::null_mut(), // lpEnvironment
             std::ptr::null_mut(), // lpCurrentDirectory
-            &si as *const _ as _, // lpStartupInfo: mutable per API contract
-            &mut pi,          // lpProcessInformation
+            &si as *const _ as *mut STARTUPINFOW, // lpStartupInfo: mutable per API contract
+            &mut pi,
         )
     };
 

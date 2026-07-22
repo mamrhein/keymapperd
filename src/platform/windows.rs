@@ -16,7 +16,7 @@ use std::{
 use parking_lot::RwLock;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use windows_sys::Win32::{
-    Foundation::{HINSTANCE, HHOOK, LPARAM, LRESULT, WPARAM},
+    Foundation::HINSTANCE,
     System::LibraryLoader::GetModuleHandleW,
     UI::{
         Input::KeyboardAndMouse::{
@@ -30,6 +30,12 @@ use windows_sys::Win32::{
         },
     },
 };
+
+/// Type aliases for hook types not re-exported in windows-sys 0.61.
+type HHOOK = *mut std::ffi::c_void;
+type LPARAM = isize;
+type LRESULT = isize;
+type WPARAM = usize;
 
 use crate::daemon::{mapping_cache::NativeKey, state::Lookup};
 
@@ -766,8 +772,8 @@ fn vk_to_modifier_bit(vk: VIRTUAL_KEY) -> Option<u8> {
 // ---------------------------------------------------------------------------
 
 static SHARED_LOOKUP: OnceLock<Arc<RwLock<dyn Lookup>>> = OnceLock::new();
-static HOOK_HANDLE: parking_lot::Mutex<*mut std::ffi::c_void> =
-    parking_lot::Mutex::new(std::ptr::null_mut());
+static HOOK_HANDLE: parking_lot::Mutex<isize> =
+    parking_lot::Mutex::new(0);
 
 fn set_shared_lookup(lookup: Arc<RwLock<dyn Lookup>>) {
     SHARED_LOOKUP
@@ -776,11 +782,11 @@ fn set_shared_lookup(lookup: Arc<RwLock<dyn Lookup>>) {
 }
 
 fn set_hook_handle(handle: HHOOK) {
-    *HOOK_HANDLE.lock() = handle;
+    *HOOK_HANDLE.lock() = handle as isize;
 }
 
 fn hook_handle() -> HHOOK {
-    *HOOK_HANDLE.lock()
+    *HOOK_HANDLE.lock() as _
 }
 
 pub fn start_mapping(
@@ -868,4 +874,3 @@ extern "system" fn low_level_keyboard_proc(
 
     unsafe { CallNextHookEx(hook_handle(), code, w_param, l_param) }
 }
-x

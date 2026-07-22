@@ -49,12 +49,14 @@ unsafe fn ver_query_value(buffer: &[u8], sub_block: &str) -> Option<Vec<u16>> {
     let mut lplp_buffer: *const u8 = std::ptr::null();
     let mut pu_len: u32 = 0;
 
-    if windows_sys::Win32::Storage::FileSystem::VerQueryValueW(
-        buffer.as_ptr() as _,
-        sub_block_utf16.as_ptr() as _,
-        &mut lplp_buffer as *const _ as *mut _,
-        &mut pu_len,
-    ) == 0
+    if unsafe {
+        windows_sys::Win32::Storage::FileSystem::VerQueryValueW(
+            buffer.as_ptr() as _,
+            sub_block_utf16.as_ptr() as _,
+            &mut lplp_buffer as *const _ as *mut _,
+            &mut pu_len,
+        )
+    } == 0
     {
         return None;
     }
@@ -63,16 +65,16 @@ unsafe fn ver_query_value(buffer: &[u8], sub_block: &str) -> Option<Vec<u16>> {
         return None;
     }
 
-    Some(
+    Some(unsafe {
         std::slice::from_raw_parts(lplp_buffer as *const u16, pu_len as usize)
-            .to_vec(),
-    )
+            .to_vec()
+    })
 }
 
 /// Resolve the actual language-specific `FileDescription` sub-block path by
 /// reading the translation table from the version resource.
 unsafe fn resolve_file_description_path(buffer: &[u8]) -> Option<String> {
-    let lang_data = ver_query_value(buffer, "\\VarFileInfo\\Translation")?;
+    let lang_data = unsafe { ver_query_value(buffer, "\\VarFileInfo\\Translation") }?;
     if lang_data.len() < 2 {
         return None;
     }
@@ -173,10 +175,10 @@ struct WindowCollector {
     pids: HashSet<u32>,
 }
 
-extern "system" fn enum_windows_proc(hwnd: isize, param: usize) -> i32 {
+extern "system" fn enum_windows_proc(hwnd: *mut std::ffi::c_void, param: isize) -> i32 {
     if unsafe { IsWindowVisible(hwnd as _) } == 1 {
         let mut pid: u32 = 0;
-        unsafe { GetWindowThreadProcessId(hwnd as _, Some(&mut pid)) };
+        unsafe { GetWindowThreadProcessId(hwnd as _, &mut pid) };
         if pid != 0 {
             let collector = param as *mut WindowCollector;
             unsafe {
@@ -201,9 +203,7 @@ pub fn list_app_names() -> Vec<String> {
     };
 
     unsafe {
-        let callback: unsafe extern "system" fn(HWND, usize) -> i32 =
-            enum_windows_proc;
-        EnumWindows(Some(callback), &mut collector as *mut _ as usize);
+        EnumWindows(Some(enum_windows_proc), &mut collector as *mut _ as _);
     }
 
     let mut app_names: Vec<String> = Vec::new();

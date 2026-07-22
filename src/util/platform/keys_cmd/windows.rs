@@ -10,7 +10,7 @@
 //! Windows implementation of `keymapper keys probe`.
 
 use windows_sys::Win32::{
-    Foundation::{HHOOK, HINSTANCE, WPARAM},
+    Foundation::HINSTANCE,
     System::LibraryLoader::GetModuleHandleW,
     UI::{
         Input::KeyboardAndMouse::{
@@ -18,12 +18,17 @@ use windows_sys::Win32::{
         },
         WindowsAndMessaging::{
             CallNextHookEx, DispatchMessageW, GetMessageW, KBDLLHOOKSTRUCT,
-            LPARAM, LRESULT, MSG, PostQuitMessage, SetWindowsHookExW,
-            TranslateMessage, UnhookWindowsHookEx, WH_KEYBOARD_LL, WM_KEYDOWN,
-            WM_SYSKEYDOWN,
+            MSG, PostQuitMessage, SetWindowsHookExW, TranslateMessage,
+            UnhookWindowsHookEx, WH_KEYBOARD_LL, WM_KEYDOWN, WM_SYSKEYDOWN,
         },
     },
 };
+
+/// Type aliases for hook types not re-exported in windows-sys 0.61.
+type HHOOK = *mut std::ffi::c_void;
+type LPARAM = isize;
+type LRESULT = isize;
+type WPARAM = usize;
 
 use crate::platform::Key;
 
@@ -31,8 +36,8 @@ use crate::platform::Key;
 const VK_LCONTROL: VIRTUAL_KEY = 0xA2;
 const VK_RCONTROL: VIRTUAL_KEY = 0xA3;
 
-static HOOK_HANDLE: parking_lot::Mutex<*mut std::ffi::c_void> =
-    parking_lot::Mutex::new(std::ptr::null_mut());
+static HOOK_HANDLE: parking_lot::Mutex<isize> =
+    parking_lot::Mutex::new(0);
 
 /// Check whether a virtual-key code corresponds to a modifier key.
 fn is_modifier(vk: VIRTUAL_KEY) -> bool {
@@ -71,7 +76,7 @@ pub fn probe() {
         std::process::exit(1);
     }
 
-    *HOOK_HANDLE.lock() = handle as _;
+    *HOOK_HANDLE.lock() = handle as isize;
 
     // Run the message loop.
     unsafe {
@@ -91,7 +96,7 @@ extern "system" fn probe_keyboard_proc(
     l_param: LPARAM,
 ) -> LRESULT {
     if code < 0 {
-        return unsafe { CallNextHookEx(0, code, w_param, l_param) };
+        return unsafe { CallNextHookEx(std::ptr::null_mut(), code, w_param, l_param) };
     }
 
     let kbd_struct = unsafe { *(l_param as *const KBDLLHOOKSTRUCT) };
@@ -103,16 +108,16 @@ extern "system" fn probe_keyboard_proc(
     // Check for Ctrl+Escape exit condition.
     if is_key_down && vk_code == 0x1B {
         // VK_ESCAPE
-        let ctrl_state = unsafe { GetKeyState(VK_CONTROL) };
+        let ctrl_state = unsafe { GetKeyState(VK_CONTROL as i32) };
         if ctrl_state < 0 {
             unsafe { PostQuitMessage(0) };
-            return unsafe { CallNextHookEx(0, code, w_param, l_param) };
+            return unsafe { CallNextHookEx(std::ptr::null_mut(), code, w_param, l_param) };
         }
     }
 
     // Skip modifier keys.
     if is_modifier(vk_code) {
-        return unsafe { CallNextHookEx(0, code, w_param, l_param) };
+        return unsafe { CallNextHookEx(std::ptr::null_mut(), code, w_param, l_param) };
     }
 
     // Print on key down.
@@ -135,5 +140,5 @@ extern "system" fn probe_keyboard_proc(
         println!("{name}: {code_str}");
     }
 
-    unsafe { CallNextHookEx(0, code, w_param, l_param) }
+    unsafe { CallNextHookEx(std::ptr::null_mut(), code, w_param, l_param) }
 }
