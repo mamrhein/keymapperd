@@ -81,14 +81,11 @@ jobs:
           gh release upload "$GITHUB_REF_NAME" "$ARCHIVE" --clobber
 
   # -----------------------------------------------------------------------
-  # Linux — x86_64 + aarch64
+  # Linux — x86_64 (native)
   # -----------------------------------------------------------------------
-  linux:
+  linux-x86_64:
     needs: create-release
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        target: [x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu]
 
     steps:
       - uses: actions/checkout@v5
@@ -105,45 +102,68 @@ jobs:
             libudev-dev \
             libxcb1-dev
 
-      - name: Add build target
-        if: matrix.target != 'x86_64-unknown-linux-gnu'
-        run: rustup target add ${{ matrix.target }}
-
       - name: Install cargo-nextest
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
         uses: taiki-e/install-action@nextest
 
-      - name: Install cross
-        if: matrix.target != 'x86_64-unknown-linux-gnu'
-        uses: taiki-e/install-action@cross
-
-      - name: Install QEMU user static
-        if: matrix.target != 'x86_64-unknown-linux-gnu'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y qemu-user-static
-
       - name: Run tests
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
         run: cargo nextest run
 
-      - name: Build release (native)
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
-        run: cargo build --release --target ${{ matrix.target }}
-
-      - name: Build release (cross)
-        if: matrix.target != 'x86_64-unknown-linux-gnu'
-        run: cross build --release --target ${{ matrix.target }}
+      - name: Build release
+        run: cargo build --release --target x86_64-unknown-linux-gnu
 
       - name: Upload artifact
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          ARCHIVE="keymapper-${{ github.ref_name }}-${{ matrix.target }}.tar.xz"
+          ARCHIVE="keymapper-${{ github.ref_name }}-x86_64-unknown-linux-gnu.tar.xz"
           STAGING="dist/keymapper/${{ github.ref_name }}"
           mkdir -p "$STAGING"
-          cp "target/${{ matrix.target }}/release/keymapper" "$STAGING/"
-          cp "target/${{ matrix.target }}/release/keymapperd" "$STAGING/"
+          cp "target/x86_64-unknown-linux-gnu/release/keymapper" "$STAGING/"
+          cp "target/x86_64-unknown-linux-gnu/release/keymapperd" "$STAGING/"
+          cp LICENSE.TXT README.md "$STAGING/"
+          tar -cJf "$ARCHIVE" --sort=name "$STAGING"
+          gh release upload "$GITHUB_REF_NAME" "$ARCHIVE" --clobber
+
+  # -----------------------------------------------------------------------
+  # Linux — aarch64 (native on ARM runner)
+  # -----------------------------------------------------------------------
+  linux-aarch64:
+    needs: create-release
+    runs-on: ubuntu-24.04-arm
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config \
+            libdbus-1-dev \
+            libudev-dev \
+            libxcb1-dev
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Run tests
+        run: cargo nextest run
+
+      - name: Build release
+        run: cargo build --release --target aarch64-unknown-linux-gnu
+
+      - name: Upload artifact
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ARCHIVE="keymapper-${{ github.ref_name }}-aarch64-unknown-linux-gnu.tar.xz"
+          STAGING="dist/keymapper/${{ github.ref_name }}"
+          mkdir -p "$STAGING"
+          cp "target/aarch64-unknown-linux-gnu/release/keymapper" "$STAGING/"
+          cp "target/aarch64-unknown-linux-gnu/release/keymapperd" "$STAGING/"
           cp LICENSE.TXT README.md "$STAGING/"
           tar -cJf "$ARCHIVE" --sort=name "$STAGING"
           gh release upload "$GITHUB_REF_NAME" "$ARCHIVE" --clobber
