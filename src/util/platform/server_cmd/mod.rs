@@ -36,20 +36,37 @@ pub fn is_running() -> bool {
 
 /// Attempt to start keymapperd as a background process.
 ///
-/// Returns `Ok(())` when the process was spawned successfully, regardless of
-/// whether it stays alive.  Returns `Err` only if the executable could not be
-/// found or the spawn itself failed.
+/// Returns `Ok(())` when the daemon was spawned and verified to be running.
+/// Returns `Err` if the executable could not be found, the spawn failed, or
+/// the process exited immediately after starting.
 #[cfg(target_os = "macos")]
 pub fn start() -> Result<(), String> {
-    macos::spawn_daemon(DAEMON_NAME)
+    let spawn_result = macos::spawn_daemon(DAEMON_NAME);
+    verify_start(spawn_result)
 }
 
 #[cfg(target_os = "linux")]
 pub fn start() -> Result<(), String> {
-    linux::spawn_daemon(DAEMON_NAME)
+    let spawn_result = linux::spawn_daemon(DAEMON_NAME);
+    verify_start(spawn_result)
 }
 
 #[cfg(target_os = "windows")]
 pub fn start() -> Result<(), String> {
-    windows::spawn_daemon(DAEMON_NAME)
+    let spawn_result = windows::spawn_daemon(DAEMON_NAME);
+    verify_start(spawn_result)
+}
+
+/// After a successful spawn, wait briefly and confirm the daemon is still alive.
+fn verify_start(spawn_result: Result<(), String>) -> Result<(), String> {
+    spawn_result?;
+
+    // Give the daemon time to initialize or fail.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    if !is_running() {
+        return Err("daemon started but exited immediately".to_string());
+    }
+
+    Ok(())
 }

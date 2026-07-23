@@ -746,7 +746,9 @@ fn server_start_not_found() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("failed to start") || stderr.contains("No such file"),
+        stderr.contains("failed to start")
+        || stderr.contains("exited immediately")
+        || stderr.contains("No such file"),
         "error message: {}",
         stderr
     );
