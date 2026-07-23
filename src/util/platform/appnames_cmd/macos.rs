@@ -7,6 +7,8 @@
 // $Source$
 // $Revision$
 
+#![allow(non_upper_case_globals)]
+
 //! Lists visible application names using CoreGraphics.
 //!
 //! The returned `app_name` is the value of `kCGWindowOwnerName` from
@@ -22,15 +24,18 @@ use core_foundation::{
     number::CFNumberGetTypeID,
     string::{CFString, CFStringGetTypeID},
 };
-use core_graphics::{
-    display::{
-        CFArrayRef, CFDictionaryGetValueIfPresent, CFDictionaryRef,
-        CGWindowListCopyWindowInfo, CGWindowListOption, kCGNullWindowID,
-    },
-    window::{
-        kCGWindowListExcludeDesktopElements, kCGWindowListOptionOnScreenOnly,
-    },
+use core_graphics::display::{
+    CFArrayRef, CFDictionaryGetValueIfPresent, CFDictionaryRef,
+    CGWindowListCopyWindowInfo,
 };
+
+// CoreGraphics window list option constants.  These used to be re-exported
+// from core_graphics::display but are now private in core-graphics 0.25.
+// Defined locally to match the macOS CoreGraphics API.
+pub(crate) type CGWindowListOption = u32;
+const kCGNullWindowID: u32 = 0;
+const kCGWindowListOptionOnScreenOnly: CGWindowListOption = 1 << 0;
+const kCGWindowListExcludeDesktopElements: CGWindowListOption = 1 << 4;
 
 /// Internal record used for deduplication.
 struct WindowInfo {
