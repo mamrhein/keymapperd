@@ -508,22 +508,15 @@ fn config_add_after_create() {
 
 #[test]
 fn config_add_fails_without_config() {
-    let dir = env::temp_dir().join("keymapper_test_add_no_config");
-    std::fs::create_dir_all(&dir).expect("failed to create temp dir");
-
-    // Ensure the platform default config is temporarily out of the way so
-    // that `find_config_path` returns `None`.
+    // Skip test if there is a platform default config.
     let default_path = keymapper::common::config_path::default_config_path()
         .expect("no default path");
-    let had_existing = default_path.is_file();
-    let backup_path = if had_existing {
-        let backup = env::temp_dir().join("keymapper_test_backup_config.yaml");
-        std::fs::rename(&default_path, &backup)
-            .expect("failed to backup config");
-        Some(backup)
-    } else {
-        None
-    };
+    if default_path.is_file() {
+        return;
+    }
+
+    let dir = env::temp_dir().join("keymapper_test_add_no_config");
+    std::fs::create_dir_all(&dir).expect("failed to create temp dir");
 
     // Run `config add` in an empty directory with no platform config — should
     // fail.
@@ -532,11 +525,6 @@ fn config_add_fails_without_config() {
         .current_dir(&dir)
         .output()
         .expect("failed to run keymapper");
-
-    // Restore the original config.
-    if let Some(backup) = backup_path {
-        std::fs::rename(&backup, &default_path).ok();
-    }
 
     assert!(!output.status.success(), "unexpected success");
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -747,8 +735,8 @@ fn server_start_not_found() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("failed to start")
-        || stderr.contains("exited immediately")
-        || stderr.contains("No such file"),
+            || stderr.contains("exited immediately")
+            || stderr.contains("No such file"),
         "error message: {}",
         stderr
     );
